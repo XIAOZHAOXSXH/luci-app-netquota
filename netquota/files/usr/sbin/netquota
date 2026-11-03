@@ -1,0 +1,105 @@
+#!/usr/bin/lua
+-- SPDX-License-Identifier: GPL-2.0-only
+local cfgmod=require('netquota.config')
+local network=require('netquota.network')
+local core=require('netquota.core')
+local json=require('luci.jsonc')
+local nixio=require('nixio')
+local fs=require('nixio.fs')
+local action=arg[1] or 'daemon'
+local status_path='/var/run/netquota-status.json'
+local function status(ok,detail)
+  local data={ok=ok,version=core.VERSION,enabled=detail.enabled,updated_at=os.time(),
+    state=detail.state,errors=detail.errors or {},warnings=detail.warnings or {}}
+  local path=status_path..'.'..nixio.getpid()
+  local f=nixio.open(path,'w','0600')
+  if f then f:write(json.stringify(data)..'\n'); f:close(); fs.rename(path,status_path) end
+  return data
+end
+local function open(cfg,net)
+  return assert(core.open({db_path=cfg.db_path,config=cfg,network=net,admin=false,
+    clock_trusted=require('netquota.time').trusted()}))
+end
+local function guarded_tick(cfg, final)
+  local net=network.new(cfg)
+  if cfg.enabled and not final then
+    local probe=net:probe()
+    if not probe.ok then net:freeze(); return false,probe end
+  end
+  local adapter=net
+  if final then
+    -- Shutdown checkpoints must never reinstall rules or reopen forwarding.
+    adapter={freeze=function() return net:freeze() end,snapshot=function() return net:snapshot() end,
+      install=function() return true end,thaw=function() return true end}
+  end
+  local svc=open(cfg,cfg.enabled and adapter or nil)
+  local ok,result=pcall(svc.tick,svc)
+  svc:close()
+  if cfg.enabled and (final or not ok or not result or not result.ok) then pcall(net.freeze,net) end
+  if not ok or not result or not result.ok then
+    return false,{errors={ok and 'Ledger reconciliation failed' or tostring(result)}}
+  end
+  return true,result
+end
+local function main()
+  local cfg=cfgmod.load()
+  local net=network.new(cfg)
+  if action=='--guard' or action=='guard' then
+    if cfg.enabled then net:freeze() end
+    return 0
+  elseif action=='--captive-closed' then
+    if cfg.enabled then net:install_captive({accounts={}}) end
+    return 0
+  elseif action=='--cleanup' or action=='cleanup' then
+    assert(not cfg.enabled,'Disable netquota.main.enabled before cleanup')
+    net:cleanup()
+    if fs.access('/etc/firewall.netquota') then os.execute('/etc/firewall.netquota --cleanup-input') end
+    return 0
+  elseif action=='preflight' or action=='--preflight' then
+    local probe=net:probe()
+    io.write(json.stringify(probe)..'\n')
+    return (not cfg.enabled or probe.ok) and 0 or 1
+  elseif action=='status' then
+    local f=io.open(status_path,'r')
+    if f then io.write(f:read('*a')); f:close() else io.write('{"ok":false,"state":"stopped"}\n') end
+    return 0
+  elseif action=='checkpoint' then
+    local ok,result=guarded_tick(cfg,true)
+    status(ok,{enabled=cfg.enabled,state='stopped',errors=not ok and result.errors or {}})
+    return ok and 0 or 1
+  end
+  assert(action=='daemon','Usage: netquota daemon|preflight|checkpoint|status|--guard|--cleanup')
+  local pid_path='/var/run/netquota.pid'
+  local pid=assert(nixio.open(pid_path,'w','0600'))
+  pid:write(tostring(nixio.getpid())..'\n'); pid:close()
+  -- This nixio exposes only POSIX default/ignore handlers, not Lua callbacks.
+  -- libubox uloop owns SIGTERM/SIGINT and returns from run() for final checkpoint.
+  local uloop=require('uloop')
+  uloop.init()
+  local timer
+  timer=uloop.timer(function()
+    local success,ok,result=pcall(guarded_tick,cfg,false)
+    local errors={}
+    if not success then
+      errors={tostring(ok)}; if cfg.enabled then pcall(network.new(cfg).freeze,network.new(cfg)) end
+    elseif not ok then errors=result.errors or {'Network reconciliation unavailable'} end
+    status(success and ok,{enabled=cfg.enabled,state=cfg.enabled and ((success and ok) and 'ready' or 'guarded') or 'disabled',
+      errors=errors,warnings=success and result and result.warnings or {}})
+    if #errors>0 then io.stderr:write('netquota: '..tostring(errors[1])..'\n') end
+    timer:set((cfg.checkpoint_seconds or 5)*1000)
+  end)
+  timer:set(1)
+  uloop.run()
+  local success,ok,result=pcall(guarded_tick,cfg,true)
+  if cfg.enabled then local last=network.new(cfg); pcall(last.freeze,last) end
+  status(success and ok,{enabled=cfg.enabled,state='stopped',errors=not success and {tostring(ok)} or (not ok and result.errors or {})})
+  local saved=io.open(pid_path,'r')
+  if saved then
+    local owner=saved:read('*l'); saved:close()
+    if owner==tostring(nixio.getpid()) then os.remove(pid_path) end
+  end
+  return success and ok and 0 or 1
+end
+local ok,result=pcall(main)
+if not ok then io.stderr:write('netquota: '..tostring(result)..'\n'); os.exit(1) end
+os.exit(result or 0)

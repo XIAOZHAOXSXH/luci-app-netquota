@@ -1,0 +1,291 @@
+#!/usr/bin/lua
+-- NetQuota rpcd executable plugin (administrator surface only).
+--
+-- rpcd protocol:
+--   netquota list            -> one JSON object: method name -> argument signature
+--   netquota call <method>   -> read one JSON object from stdin, print one JSON line
+--
+-- Only administrator methods are listed and callable. Portal (self-service) methods are
+-- deliberately absent so no ACL can reach them through this executable.
+--
+-- Signatures:
+--   * byte counters use "64" so ubus delivers UBUS_TYPE_INT64. A plain 0/1 requests INT32
+--     and would truncate quotas above 2 GB, so 64 is mandatory for quota_bytes.
+--   * reset_day is advertised as cjson.null (UNSPEC) so a JSON null reaches the domain as
+--     "inherit", distinguishing it from an omitted argument.
+--
+-- Arguments are parsed with cjson so JSON null survives as a real sentinel; the domain
+-- validation layer then performs strict type/range checks before any SQL runs.
+
+local function try_require(name)
+  local ok, mod = pcall(require, name)
+  if ok then return mod end
+  return nil
+end
+
+-- Defensive: the root rpcd wrapper runs /usr/bin/lua, where /usr/lib/lua is already on the
+-- path. Adding the standard patterns keeps this executable usable from tests as well.
+for _, pattern in ipairs({ "/usr/lib/lua/?.lua", "/usr/lib/lua/?/init.lua" }) do
+  if not package.path:find(pattern, 1, true) then
+    package.path = pattern .. ";" .. package.path
+  end
+end
+
+local cjson = try_require("cjson")
+local jsonc = cjson and nil or try_require("luci.jsonc")
+
+local function json_null()
+  if cjson then return cjson.null end
+  if jsonc then return jsonc.null end
+  return nil
+end
+
+local function encode(value)
+  local ok, util=pcall(require,'netquota.util')
+  if ok then
+    local success,out=pcall(util.json_encode,value)
+    if success then return out end
+    return nil
+  end
+  local util = try_require("netquota.util")
+  if util and type(util.json_encode) == "function" then
+    local ok, out = pcall(util.json_encode, value)
+    if ok then return out end
+  end
+  if cjson then
+    local ok, out = pcall(cjson.encode, value)
+    if ok and type(out) == "string" then return out end
+  end
+  if jsonc then
+    local ok, out = pcall(jsonc.stringify, value)
+    if ok and type(out) == "string" then return out end
+  end
+  return nil
+end
+
+local function decode(text)
+  if type(text) ~= "string" or text:match("^%s*$") then return {} end
+  if cjson then
+    local ok, obj = pcall(cjson.decode, text)
+    if ok and type(obj) == "table" then return obj end
+    return nil
+  end
+  if jsonc then
+    local ok, obj = pcall(jsonc.parse, text)
+    if ok and type(obj) == "table" then return obj end
+    return nil
+  end
+  return nil
+end
+
+local function emit(tbl)
+  local out = encode(tbl)
+  if not out then
+    io.write('{"ok":false,"error":{"code":"INTERNAL","message":"cannot encode response"}}')
+    io.write("\n")
+    return
+  end
+  io.write(out)
+  io.write("\n")
+end
+
+local function reject(code, message)
+  emit({ ok = false, error = { code = code, message = message } })
+end
+
+local function int64()
+  return 64
+end
+
+local function string_arg()
+  return ""
+end
+
+local function boolean_arg()
+  return false
+end
+
+-- Administrator surface. quota_bytes uses 64 (INT64); reset_day uses the JSON null marker
+-- so "inherit" is expressible and distinct from an omitted argument.
+local METHODS = {
+  status = {},
+  get_summary = {},
+  list_accounts = {
+    search = string_arg(),
+    status = string_arg(),
+    sort = string_arg(),
+    limit = int64(),
+  },
+  get_account = { id = int64() },
+  create_account = {
+    username = string_arg(),
+    password = string_arg(),
+    quota_bytes = int64(),
+    reset_day = json_null(),
+  },
+  update_account = {
+    id = int64(),
+    username = string_arg(),
+    password = string_arg(),
+    quota_bytes = int64(),
+    reset_day = json_null(),
+    clear_pending_reset_day = boolean_arg(),
+  },
+  delete_account = { id = int64() },
+  get_traffic = {},
+  get_settings = {},
+  update_settings = {
+    default_reset_day = int64(),
+    timezone = string_arg(),
+  },
+  get_portal_info = {},
+  get_deployment = {},
+  save_deployment = {wifi_section='',egress='',portal_hostname='',portal_mode=''},
+  enable_guest = {wifi_section=''},
+  set_capture = {enabled=false},
+  generate_certificate = {},
+  import_certificate = {certificate_pem='',private_key_pem=''},
+  get_certificate = {},
+}
+
+local DEPLOYMENT = {get_deployment='status',save_deployment='save',enable_guest='enable_guest',
+  set_capture='capture',generate_certificate='generate',import_certificate='import',get_certificate='public_certificate'}
+
+-- Keys injected by the ubus/rpcd transport layer are not domain arguments.
+local TRANSPORT_KEYS = {
+  ["ubus_rpc_session"] = true,
+  ["ubus_request_id"] = true,
+}
+
+local function strip_transport(args)
+  if type(args) ~= "table" then return args end
+  local cleaned = {}
+  for k, v in pairs(args) do
+    if not TRANSPORT_KEYS[k] then cleaned[k] = v end
+  end
+  return cleaned
+end
+
+-- rpcd may deliver INT64 as a numeric string. Convert only plain digit strings; everything
+-- else passes through untouched so the domain rejects it as an invalid type.
+local NUMERIC_KEYS = { "id", "quota_bytes", "reset_day", "default_reset_day", "limit" }
+local function normalise_numeric(args)
+  if type(args) ~= "table" then return args end
+  for _, key in ipairs(NUMERIC_KEYS) do
+    local v = args[key]
+    if type(v) == "string" then
+      local trimmed = v:match("^%s*(.-)%s*$")
+      if trimmed == "" then
+        args[key] = json_null()
+      elseif trimmed:match("^%-?%d+$") then
+        local n = tonumber(trimmed)
+        if n and n >= -9007199254740991 and n <= 9007199254740991 then
+          args[key] = math.floor(n)
+        end
+      end
+    end
+  end
+  return args
+end
+
+local function read_stdin()
+  local buf = {}
+  local size=0
+  while true do
+    local line = io.read(4096)
+    if not line then break end
+    size=size+#line
+    if size>131072 then return nil end
+    buf[#buf + 1] = line
+  end
+  return table.concat(buf)
+end
+
+-- Opens the domain service with the configured network adapter. Any load failure is
+-- reported as an envelope; no stack trace or filesystem path is disclosed.
+local function open_service()
+  local ok_core, core = pcall(require, "netquota.core")
+  if not ok_core or type(core) ~= "table" or type(core.open) ~= "function" then
+    return nil
+  end
+  local opts = { admin = true }
+  opts.clock_trusted=require('netquota.time').trusted()
+  local config = try_require("netquota.config")
+  local network = try_require("netquota.network")
+  if not config or type(config.load) ~= "function" or not network or type(network.new) ~= "function" then return nil end
+  local ok_load, cfg = pcall(config.load)
+  if not ok_load or type(cfg) ~= "table" then return nil end
+  opts.config, opts.db_path = cfg, cfg.db_path
+  local ok_new, net = pcall(network.new, cfg)
+  if not ok_new or type(net) ~= "table" then return nil end
+  opts.network = net
+
+  local ok_open, service = pcall(core.open, opts)
+  if not ok_open or type(service) ~= "table" then return nil end
+  return service
+end
+
+local function cmd_list()
+  local names = {}
+  for name in pairs(METHODS) do names[#names + 1] = name end
+  table.sort(names)
+  local out = {}
+  for _, name in ipairs(names) do out[name] = METHODS[name] end
+  emit(out)
+end
+
+local function cmd_call(method)
+  if type(method) ~= "string" or method == "" then
+    return reject("INVALID_ARGUMENT", "method name required")
+  end
+  if not METHODS[method] then
+    -- Unknown and portal_* methods land here: the admin surface exposes neither.
+    return reject("NOT_FOUND", "unknown method")
+  end
+  local args = decode(read_stdin())
+  if not args then
+    return reject("INVALID_ARGUMENT", "arguments must be a JSON object")
+  end
+  args = normalise_numeric(strip_transport(args))
+
+  if DEPLOYMENT[method] then
+    for key in pairs(args) do
+      if METHODS[method][key]==nil then return reject('INVALID_ARGUMENT','unknown argument') end
+    end
+    local ok,result=pcall(function() return require('netquota.deployment')[DEPLOYMENT[method]](args) end)
+    if not ok then return reject('DEPLOYMENT',tostring(result):gsub('^.-:%d+: ','')) end
+    return emit({ok=true,data=result})
+  end
+
+  local service = open_service()
+  if not service then
+    return reject("UNAVAILABLE", "service unavailable")
+  end
+  local ok, result = pcall(service.request, service, method, args)
+  pcall(service.close, service)
+  if not ok then
+    return reject("INTERNAL", "internal error")
+  end
+  if type(result) ~= "table" then
+    return reject("INTERNAL", "empty response")
+  end
+  emit(result)
+end
+
+local function main(argv)
+  local command = argv[1]
+  if command == "list" then
+    local ok = pcall(cmd_list)
+    if not ok then reject("INTERNAL", "cannot list methods") end
+    return 0
+  end
+  if command == "call" then
+    local ok = pcall(cmd_call, argv[2])
+    if not ok then reject("INTERNAL", "call failed") end
+    return 0
+  end
+  reject("INVALID_ARGUMENT", "usage: netquota list|call <method>")
+  return 1
+end
+
+os.exit(main(arg) or 0)

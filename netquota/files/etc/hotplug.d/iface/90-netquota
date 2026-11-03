@@ -1,0 +1,13 @@
+#!/bin/sh
+[ "$(uci -q get netquota.main.enabled)" = 1 ] || exit 0
+case "$ACTION" in ifup|ifdown|ifupdate) ;; *) exit 0 ;; esac
+guest="$(uci -q get netquota.main.guest)"
+egress="$(uci -q get netquota.main.egress)"
+matched=0
+[ "$INTERFACE" = guest ] && matched=1
+[ -n "$guest" ] && [ "$DEVICE" = "$guest" ] && matched=1
+for dev in $egress; do [ "$DEVICE" = "$dev" ] && matched=1; done
+[ "$matched" = 1 ] || exit 0
+mkdir /var/run/netquota-reload.lock 2>/dev/null || exit 0
+trap 'rmdir /var/run/netquota-reload.lock' EXIT
+/etc/init.d/netquota reload

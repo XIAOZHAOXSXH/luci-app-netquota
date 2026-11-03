@@ -1,0 +1,23 @@
+artifacts/
+.dsh/
+*.log
+__pycache__/
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+*.key
+.env
+.playwright-cli/
+output/playwright/
+
+.tmp-probe/
+
+# Generated packages are published as Release assets, not source files.
+dist/
+.build/
+output/
+
+# Local raw device/harness evidence; curated compatibility notes remain public.
+docs/compatibility/mt3000-readonly-probe.json
+docs/compatibility/automation-review.md

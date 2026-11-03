@@ -1,0 +1,21 @@
+#!/usr/bin/lua
+local ok=pcall(function()
+  local env={}
+  for _,key in ipairs({'HTTPS','CONTENT_LENGTH','CONTENT_TYPE','REQUEST_METHOD','QUERY_STRING',
+    'SCRIPT_NAME','PATH_INFO','REMOTE_ADDR','HTTP_ORIGIN','HTTP_COOKIE','HTTP_X_CSRF_TOKEN','HTTP_SEC_FETCH_SITE'}) do
+    env[key]=os.getenv(key)
+  end
+  if env.REQUEST_METHOD=='POST' then
+    -- Diagnostics deliberately exclude credentials, cookies, bodies and tokens.
+    require('nixio').syslog('info','netquota portal_request '..require('luci.jsonc').stringify({
+      method=env.REQUEST_METHOD,path=tostring(env.PATH_INFO or ''):sub(1,80),
+      origin=tostring(env.HTTP_ORIGIN or '(missing)'):sub(1,160),
+      site=tostring(env.HTTP_SEC_FETCH_SITE or '(missing)'):sub(1,32),
+      tls=env.HTTPS,peer=env.REMOTE_ADDR}))
+  end
+  require('netquota.portal').main({env=env})
+end)
+if not ok then
+  io.write('Status: 503 Service Unavailable\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n\r\n'..
+    '{"ok":false,"error":{"code":"service_unavailable","message":"认证服务暂不可用"}}')
+end

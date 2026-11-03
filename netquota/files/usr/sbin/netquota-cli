@@ -1,0 +1,237 @@
+#!/usr/bin/lua
+-- NetQuota command line interface (administrator, local root only).
+--
+-- Usage:
+--   netquota-cli list                     list exposed methods
+--   netquota-cli call <method>            read JSON object arguments from stdin
+--   netquota-cli tick                     internal maintenance cycle (no arguments)
+--   netquota-cli status                  service/database status
+--   netquota-cli --db-path PATH ...       override the database path (tests / recovery)
+--   netquota-cli --no-network ...         do not attach the network adapter (DB-only)
+--
+-- Method surface: administrator methods plus the internal `tick` cycle. Portal
+-- (self-service) methods are intentionally not reachable from the CLI.
+--
+-- Passwords are NEVER accepted as command line arguments. The complete argument object is
+-- read from stdin so secrets cannot appear in the process list or shell history. There is
+-- deliberately no "run a command" method.
+
+local function try_require(name)
+  local ok, mod = pcall(require, name)
+  if ok then return mod end
+  return nil
+end
+
+for _, pattern in ipairs({ "/usr/lib/lua/?.lua", "/usr/lib/lua/?/init.lua" }) do
+  if not package.path:find(pattern, 1, true) then
+    package.path = pattern .. ";" .. package.path
+  end
+end
+
+local cjson = try_require("cjson")
+local jsonc = cjson and nil or try_require("luci.jsonc")
+
+local function json_null()
+  if cjson then return cjson.null end
+  if jsonc then return jsonc.null end
+  return nil
+end
+
+local function encode(value)
+  local util = try_require("netquota.util")
+  if util and type(util.json_encode) == "function" then
+    local ok, out = pcall(util.json_encode, value)
+    if ok then return out end
+  end
+  if cjson then
+    local ok, out = pcall(cjson.encode, value)
+    if ok and type(out) == "string" then return out end
+  end
+  if jsonc then
+    local ok, out = pcall(jsonc.stringify, value)
+    if ok and type(out) == "string" then return out end
+  end
+  return nil
+end
+
+local function decode(text)
+  if type(text) ~= "string" or text:match("^%s*$") then return {} end
+  if cjson then
+    local ok, obj = pcall(cjson.decode, text)
+    if ok and type(obj) == "table" then return obj end
+    return nil
+  end
+  if jsonc then
+    local ok, obj = pcall(jsonc.parse, text)
+    if ok and type(obj) == "table" then return obj end
+    return nil
+  end
+  return nil
+end
+
+local function emit(value)
+  local out = encode(value)
+  if not out then
+    io.write('{"ok":false,"error":{"code":"INTERNAL","message":"cannot encode response"}}\n')
+    return false
+  end
+  io.write(out, "\n")
+  return true
+end
+
+local function fail(code, message, status)
+  emit({ ok = false, error = { code = code, message = message } })
+  os.exit(status or 1)
+end
+
+local function read_stdin()
+  local buf = {}
+  while true do
+    local line = io.read(4096)
+    if not line then break end
+    buf[#buf + 1] = line
+  end
+  return table.concat(buf)
+end
+
+-- Administrator methods plus internal tick. Portal methods stay internal to the service.
+local METHODS = {
+  status = true,
+  get_summary = true,
+  list_accounts = true,
+  get_account = true,
+  create_account = true,
+  update_account = true,
+  delete_account = true,
+  get_traffic = true,
+  get_settings = true,
+  update_settings = true,
+  get_portal_info = true,
+  tick = true,
+}
+
+local NO_ARGUMENT_METHODS = { status = true, get_summary = true, get_traffic = true,
+  get_settings = true, get_portal_info = true, tick = true }
+
+local function usage()
+  io.stderr:write("usage: netquota-cli [--db-path PATH] [--no-network] list|call <method>|tick\n")
+  os.exit(2)
+end
+
+-- Opens the service. Domain/config load failures are returned as envelopes without stack
+-- traces or internal paths.
+local function open_service(db_path, use_network)
+  local ok_core, core = pcall(require, "netquota.core")
+  if not ok_core or type(core) ~= "table" or type(core.open) ~= "function" then
+    return nil
+  end
+  local opts = { admin = true }
+  opts.clock_trusted = db_path ~= nil or require('netquota.time').trusted()
+  if db_path then
+    opts.db_path = db_path
+  else
+    local ok_cfg, config = pcall(require, "netquota.config")
+    if ok_cfg and type(config) == "table" and type(config.load) == "function" then
+      local ok_load, cfg = pcall(config.load)
+      if ok_load and type(cfg) == "table" then
+        opts.config = cfg
+        if type(cfg.db_path) == "string" and cfg.db_path ~= "" then opts.db_path = cfg.db_path end
+        if use_network then
+          local ok_net, network = pcall(require, "netquota.network")
+          if ok_net and type(network) == "table" and type(network.new) == "function" then
+            local ok_new, net = pcall(network.new, cfg)
+            if ok_new and type(net) == "table" then opts.network = net end
+          end
+        end
+      end
+    end
+  end
+  local ok_open, service = pcall(core.open, opts)
+  if not ok_open or type(service) ~= "table" then return nil end
+  return service
+end
+
+-- Converts numeric strings delivered by shell quoting into integers; anything else is left
+-- as-is for strict domain validation to reject.
+local NUMERIC_KEYS = { "id", "quota_bytes", "reset_day", "default_reset_day", "limit" }
+local function normalise_numeric(args)
+  if type(args) ~= "table" then return args end
+  for _, key in ipairs(NUMERIC_KEYS) do
+    local v = args[key]
+    if type(v) == "string" then
+      local trimmed = v:match("^%s*(.-)%s*$")
+      if trimmed == "" then
+        args[key] = json_null()
+      elseif trimmed:match("^%-?%d+$") then
+        local n = tonumber(trimmed)
+        if n and n >= -9007199254740991 and n <= 9007199254740991 then
+          args[key] = math.floor(n)
+        end
+      end
+    end
+  end
+  return args
+end
+
+local function main(argv)
+  local db_path, use_network = nil, true
+  local method
+  local i = 1
+  while argv[i] do
+    local a = argv[i]
+    if a == "--db-path" then
+      db_path = argv[i + 1]
+      if not db_path or db_path == "" then usage() end
+      i = i + 2
+    elseif a == "--no-network" then
+      use_network = false
+      i = i + 1
+    elseif a == "list" then
+      local names = {}
+      for name in pairs(METHODS) do names[#names + 1] = name end
+      table.sort(names)
+      emit({ methods = names })
+      return 0
+    elseif a == "call" then
+      method = argv[i + 1]
+      i = i + 2
+    elseif a == "tick" then
+      method = "tick"
+      i = i + 1
+    elseif a:sub(1, 2) == "--" then
+      usage()
+    else
+      if method then usage() end
+      method = a
+      i = i + 1
+    end
+  end
+
+  if type(method) ~= "string" or not METHODS[method] then
+    fail("NOT_FOUND", "unknown method", 2)
+  end
+
+  local args = {}
+  if not NO_ARGUMENT_METHODS[method] then
+    args = decode(read_stdin())
+    if not args then
+      fail("INVALID_ARGUMENT", "stdin must contain a JSON object", 2)
+    end
+    args = normalise_numeric(args)
+  end
+
+  local service = open_service(db_path, use_network)
+  if not service then
+    fail("UNAVAILABLE", "service unavailable", 3)
+  end
+  local ok, result = pcall(service.request, service, method, args)
+  pcall(service.close, service)
+  if not ok or type(result) ~= "table" then
+    fail("INTERNAL", "internal error", 1)
+  end
+  emit(result)
+  if result.ok == true then return 0 end
+  return 1
+end
+
+os.exit(main(arg) or 0)

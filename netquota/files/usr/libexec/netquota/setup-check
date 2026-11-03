@@ -1,0 +1,10 @@
+#!/usr/bin/lua
+-- Read-only readiness check, including prerequisites while capture is disabled.
+local ok,result=pcall(function()
+  local cfg=require('netquota.config').load()
+  cfg.enabled=true
+  return require('netquota.network').new(cfg):probe()
+end)
+if not ok then result={ok=false,errors={tostring(result)}} end
+io.write(require('luci.jsonc').stringify(result)..'\n')
+os.exit(result.ok and 0 or 1)

@@ -1,0 +1,42 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# fw3 include. Only the tagged NQ_INPUT chain and NetQuota nft guard are owned.
+IPT=/usr/sbin/iptables
+TAG=netquota-owned-input
+chain_owned() {
+	"$IPT" -w -C NQ_INPUT -m comment --comment "$TAG" -j RETURN 2>/dev/null
+}
+cleanup_input() {
+	if "$IPT" -w -nL NQ_INPUT >/dev/null 2>&1; then
+		chain_owned || { logger -t netquota 'Refusing foreign NQ_INPUT chain'; return 1; }
+		while "$IPT" -w -C INPUT -m comment --comment "$TAG" -j NQ_INPUT 2>/dev/null; do
+			"$IPT" -w -D INPUT -m comment --comment "$TAG" -j NQ_INPUT || return 1
+		done
+		"$IPT" -w -F NQ_INPUT && "$IPT" -w -X NQ_INPUT
+	fi
+}
+[ "$1" = --cleanup-input ] && { cleanup_input; exit $?; }
+if [ "$(uci -q get netquota.main.enabled)" != 1 ]; then cleanup_input; exit $?; fi
+/usr/sbin/netquota --guard || exit 1
+/usr/sbin/netquota --captive-closed || exit 1
+guest="$(uci -q get netquota.main.guest)"
+addr="$(uci -q get netquota.main.guest_address)"
+http="$(uci -q get netquota.main.http_port)"
+https="$(uci -q get netquota.main.https_port)"
+mode="$(uci -q get netquota.main.portal_mode)"
+case "$guest" in ''|*[!a-zA-Z0-9_.-]*) exit 1 ;; esac
+case "$addr" in ''|*[!0-9.]*) exit 1 ;; esac
+case "$http:$https" in *[!0-9:]*) exit 1 ;; esac
+[ "$http" -ge 1 ] && [ "$http" -le 65535 ] && [ "$https" -ge 1 ] && [ "$https" -le 65535 ] || exit 1
+if "$IPT" -w -nL NQ_INPUT >/dev/null 2>&1; then
+	chain_owned || { logger -t netquota 'Refusing foreign NQ_INPUT chain'; exit 1; }
+	"$IPT" -w -F NQ_INPUT || exit 1
+else
+	"$IPT" -w -N NQ_INPUT || exit 1
+fi
+ports="$http"
+[ "$mode" != https ] || ports="$http,$https"
+"$IPT" -w -A NQ_INPUT -i "$guest" -d "$addr" -p tcp -m multiport --dports "$ports" -j ACCEPT || exit 1
+"$IPT" -w -A NQ_INPUT -m comment --comment "$TAG" -j RETURN || exit 1
+"$IPT" -w -C INPUT -m comment --comment "$TAG" -j NQ_INPUT 2>/dev/null || \
+	"$IPT" -w -I INPUT 1 -m comment --comment "$TAG" -j NQ_INPUT

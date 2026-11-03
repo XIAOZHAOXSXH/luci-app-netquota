@@ -1,0 +1,26 @@
+#!/bin/sh
+[ "${IPKG_NO_SCRIPT}" = 1 ] && exit 0
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+# Existing releases were HTTPS-only. Preserve their transport on upgrade;
+# fresh installations contain an explicit portal_mode=http in the conffile.
+if [ -f /etc/config/netquota ] && [ -z "$(uci -q get netquota.main.portal_mode)" ]; then
+ uci set netquota.main.portal_mode=https && uci commit netquota || exit 1
+fi
+# Register only the package-owned fw3 include; preserve capture and networking.
+if [ -f /etc/firewall.netquota ]; then
+ section="$(uci -q get firewall.netquota)"
+ path="$(uci -q get firewall.netquota.path)"
+ if [ -n "$section" ] && { [ "$section" != include ] || [ "$path" != /etc/firewall.netquota ]; }; then
+  echo 'netquota: foreign firewall.netquota section exists; refusing overwrite' >&2
+  exit 1
+ fi
+ uci set firewall.netquota=include || exit 1
+ uci set firewall.netquota.type=script || exit 1
+ uci set firewall.netquota.path=/etc/firewall.netquota || exit 1
+ uci set firewall.netquota.reload=1 || exit 1
+ uci commit firewall || exit 1
+fi
+# Boot service registers the early guard. Source configuration defaults disabled.
+[ ! -x /etc/init.d/netquota ] || /etc/init.d/netquota enable || exit 1
+echo 'netquota installed; existing capture setting preserved; service not started.'
+exit 0

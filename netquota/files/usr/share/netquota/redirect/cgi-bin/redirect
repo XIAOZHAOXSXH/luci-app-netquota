@@ -1,0 +1,3 @@
+#!/usr/bin/lua
+local ok=pcall(function() require('netquota.portal').main_redirect() end)
+if not ok then io.write('Status: 503 Service Unavailable\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\n\r\nPortal is not configured.') end

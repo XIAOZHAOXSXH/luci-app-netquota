@@ -1,0 +1,35 @@
+{
+	"luci-app-netquota": {
+		"description": "Grant access to the NetQuota account and quota administration API",
+		"read": {
+			"ubus": {
+				"netquota": [
+					"status",
+					"get_summary",
+					"list_accounts",
+					"get_account",
+					"get_traffic",
+					"get_settings",
+					"get_portal_info",
+					"get_deployment",
+					"get_certificate"
+				]
+			}
+		},
+		"write": {
+			"ubus": {
+				"netquota": [
+					"create_account",
+					"update_account",
+					"delete_account",
+					"update_settings",
+					"save_deployment",
+					"enable_guest",
+					"set_capture",
+					"generate_certificate",
+					"import_certificate"
+				]
+			}
+		}
+	}
+}

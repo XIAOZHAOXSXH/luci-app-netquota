@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>NetQuota 上网认证</title>
+<link rel="stylesheet" href="/portal.css?v=0.5.1">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<a class="skip-link" href="#main">跳到主要内容</a>
+<noscript>
+  <div class="banner banner-warn" role="alert">此认证页面需要启用 JavaScript。请启用后重新载入页面。</div>
+</noscript>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">NQ</span>
+      <span class="brand-text">
+        <strong>NetQuota</strong>
+        <small>访客上网认证</small>
+      </span>
+    </div>
+    <span id="service-badge" class="badge badge-muted" role="status" aria-live="polite">正在检测服务…</span>
+  </div>
+</header>
+
+<main id="main" class="wrap">
+  <div id="global-alert" class="banner banner-warn" role="alert" hidden></div>
+
+  <!-- 登录 -->
+  <section id="view-login" class="card" aria-labelledby="login-title">
+    <div class="card-head">
+      <h1 id="login-title">欢迎使用访客网络</h1>
+      <p class="muted">请使用管理员分配的账号登录，登录后即可访问互联网。</p>
+    </div>
+    <form id="login-form" novalidate autocomplete="on">
+      <div class="field">
+        <label for="login-username">账号</label>
+        <input id="login-username" name="username" type="text" inputmode="latin"
+               autocomplete="username" autocapitalize="off" spellcheck="false"
+               required minlength="3" maxlength="24" aria-describedby="login-username-help">
+        <p id="login-username-help" class="help">3–24 位字母、数字、下划线或短横线。</p>
+      </div>
+      <div class="field">
+        <label for="login-password">密码</label>
+        <div class="input-row">
+          <input id="login-password" name="password" type="password"
+                 autocomplete="current-password" required minlength="8" maxlength="128">
+          <button id="login-toggle-pw" class="ghost" type="button" aria-pressed="false"
+                  aria-controls="login-password">显示</button>
+        </div>
+      </div>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button id="login-submit" class="primary" type="submit">登录</button>
+    </form>
+    <p class="fineprint" id="login-transmission-note">
+      请仅使用管理员分配的专用上网账号，不要复用管理密码或个人常用密码。
+    </p>
+  </section>
+
+  <!-- 我的账号 -->
+  <section id="view-account" class="card" aria-labelledby="account-title" hidden>
+    <div class="card-head">
+      <h1 id="account-title">我的账号</h1>
+      <p class="muted">账号 <strong id="acct-username">—</strong> 的本周期用量如下。</p>
+    </div>
+
+    <div id="acct-exhausted" class="banner banner-danger" role="alert" hidden>
+      本周期流量已用尽，当前无法继续访问互联网。你仍可在本页查看用量并修改密码。
+    </div>
+    <div id="acct-online" class="banner banner-ok" role="status" hidden>
+      已连接网络。<span id="acct-session-note"></span>
+    </div>
+
+    <dl class="stats">
+      <div class="stat">
+        <dt>已用流量</dt>
+        <dd><span id="acct-used">—</span> <span class="muted">/ <span id="acct-quota">—</span></span></dd>
+      </div>
+      <div class="stat">
+        <dt>剩余流量</dt>
+        <dd id="acct-remaining">—</dd>
+      </div>
+      <div class="stat">
+        <dt>上传</dt>
+        <dd id="acct-up">—</dd>
+      </div>
+      <div class="stat">
+        <dt>下载</dt>
+        <dd id="acct-down">—</dd>
+      </div>
+    </dl>
+
+    <div class="progress-block">
+      <div class="progress-label">
+        <span>本周期使用进度</span>
+        <span id="acct-percent">—</span>
+      </div>
+      <div class="progress" role="progressbar" id="acct-progress"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+           aria-label="本周期流量使用百分比">
+        <span id="acct-progress-bar" class="progress-bar" style="width:0%"></span>
+      </div>
+    </div>
+
+    <dl class="meta">
+      <div><dt>本周期开始</dt><dd id="acct-period-start">—</dd></div>
+      <div><dt>下次结算</dt><dd id="acct-period-end">—</dd></div>
+      <div><dt>在线终端</dt><dd id="acct-sessions">—</dd></div>
+      <div><dt>数据更新</dt><dd id="acct-updated">—</dd></div>
+    </dl>
+
+    <div class="actions">
+      <button id="acct-refresh" class="secondary" type="button">刷新用量</button>
+      <a class="secondary linkish" href="#password-title" id="acct-to-password">修改密码</a>
+      <button id="logout-btn" class="secondary" type="button">退出登录</button>
+    </div>
+    <p id="acct-error" class="form-error" role="alert" hidden></p>
+  </section>
+
+  <!-- 修改密码 -->
+  <section id="view-password" class="card" aria-labelledby="password-title" hidden>
+    <div class="card-head">
+      <h1 id="password-title">修改密码</h1>
+      <p class="muted">需要验证原密码。修改成功后，该账号在其它终端上的登录会全部退出，本周期已用流量保持不变。</p>
+    </div>
+    <form id="password-form" novalidate>
+      <div class="field">
+        <label for="pw-old">原密码</label>
+        <input id="pw-old" name="old_password" type="password" autocomplete="current-password"
+               required minlength="8" maxlength="128">
+      </div>
+      <div class="field">
+        <label for="pw-new">新密码</label>
+        <input id="pw-new" name="new_password" type="password" autocomplete="new-password"
+               required minlength="8" maxlength="128" aria-describedby="pw-new-help">
+        <p id="pw-new-help" class="help">8–128 个字符，建议使用字母、数字与符号的组合。</p>
+      </div>
+      <div class="field">
+        <label for="pw-confirm">确认新密码</label>
+        <input id="pw-confirm" name="confirm_password" type="password" autocomplete="new-password"
+               required minlength="8" maxlength="128">
+      </div>
+      <p id="password-error" class="form-error" role="alert" hidden></p>
+      <p id="password-ok" class="form-ok" role="status" hidden></p>
+      <div class="actions">
+        <button id="password-submit" class="primary" type="submit">保存新密码</button>
+        <button id="password-cancel" class="secondary" type="button">返回我的账号</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- 认证成功 -->
+  <section id="view-done" class="card" aria-labelledby="done-title" hidden>
+    <div class="card-head">
+      <h1 id="done-title">登录成功</h1>
+      <p class="muted" id="done-message">已获得上网权限，可以正常访问互联网。</p>
+    </div>
+    <p id="done-exhausted" class="banner banner-danger" role="alert" hidden>
+      本周期流量已用尽，当前不会获得上网权限。你仍可在我的账号中查看用量并修改密码。
+    </p>
+    <div class="actions">
+      <button id="done-account" class="primary" type="button">查看我的账号</button>
+    </div>
+  </section>
+
+  <footer class="pagefoot">
+    <p>NetQuota <span id="version-label"></span> · 本页面仅提供账号自助服务，不包含任何路由器管理功能。</p>
+    <p>认证连接：<span id="tls-status">正在检查</span>。<span id="tls-note"></span></p>
+  </footer>
+</main>
+
+<script src="/portal.js?v=0.5.1"></script>
+</body>
+</html>

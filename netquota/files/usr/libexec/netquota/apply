@@ -1,0 +1,4 @@
+#!/usr/bin/lua
+-- Detached apply job: let the admin RPC return before restarting listeners.
+require('nixio').nanosleep(1)
+os.exit(require('netquota.deployment').apply() and 0 or 1)

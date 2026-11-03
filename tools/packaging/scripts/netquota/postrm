@@ -1,0 +1,10 @@
+#!/bin/sh
+[ "${IPKG_NO_SCRIPT}" = 1 ] && exit 0
+[ -n "${IPKG_INSTROOT}" ] && exit 0
+case "$1" in upgrade|failed-upgrade) exit 0 ;; esac
+[ "${PKG_UPGRADE:-0}" = 1 ] && exit 0
+if [ ! -f /etc/config/netquota ] && [ -f /etc/netquota/config.removed ]; then
+ umask 077
+ cp /etc/netquota/config.removed /etc/config/netquota || exit 1
+fi
+exit 0
