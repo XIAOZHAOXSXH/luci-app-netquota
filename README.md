@@ -130,9 +130,9 @@ python tools/build_ipk.py
 # 本地检查
 python -m unittest discover -s tests -p 'test_*.py'
 
-# Linux x86_64：下载官方 APK 工具后构建，需 fakeroot、zstd
+# Linux x86_64：下载官方 APK 工具后构建，需 zstd 和 sudo
 python tools/fetch_apk_tool.py
-fakeroot python tools/build_apk.py --apk-tool <下载器输出的APK_TOOL路径>
+sudo python3 tools/build_apk.py --apk-tool <下载器输出的APK_TOOL路径>
 ```
 
 开发者实机验证入口及测试夹具在 `tools/`、`tests/` 中，使用前请阅读 [构建说明](docs/BUILDING.md)。客户的安装后配置和日常操作均通过图形界面完成。

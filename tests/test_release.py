@@ -18,6 +18,11 @@ import release_metadata
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_apk_frontend_without_postrm_uses_only_declared_hooks(self):
+        spec = build_ipk.package_specs(str(ROOT))[1]
+        hooks = build_apk.lifecycle_scripts(spec, ROOT)
+        self.assertEqual(set(hooks), {'post-install', 'pre-upgrade', 'post-upgrade', 'pre-deinstall'})
+
     def test_apk_staging_matches_every_ipk_payload_file(self):
         for spec in build_ipk.package_specs(str(ROOT)):
             with self.subTest(package=spec.name), tempfile.TemporaryDirectory() as directory:

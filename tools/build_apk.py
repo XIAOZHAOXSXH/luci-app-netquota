@@ -2,7 +2,7 @@
 """Create OpenWrt APKv3 packages with the official apk mkpkg tool.
 
 Shares the exact source allowlist, permissions and maintainer scripts with the
-tested IPK builder. Run under fakeroot on Linux; output packages are unsigned.
+tested IPK builder. Run as root on Linux; output packages are unsigned.
 """
 import argparse
 import hashlib
@@ -59,13 +59,15 @@ def lifecycle_scripts(spec, repo_root):
             body += functions + ' ' + default + ' || exit $?\nfi\n'
         return body.encode()
 
-    return {
+    hooks = {
         'post-install': wrap('postinst', default='default_postinst'),
         'pre-upgrade': wrap('prerm', upgrade=True, default='default_prerm'),
         'post-upgrade': wrap('postinst', upgrade=True, default='default_postinst'),
         'pre-deinstall': wrap('prerm', default='default_prerm'),
-        'post-deinstall': wrap('postrm'),
     }
+    if 'postrm' in canonical:
+        hooks['post-deinstall'] = wrap('postrm')
+    return hooks
 
 
 def build(spec, repo_root, out_dir, apk_tool):
@@ -102,8 +104,8 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', args.version):
         parser.error('version must be MAJOR.MINOR.PATCH')
-    if os.getuid() != 0:
-        parser.error('run with fakeroot so APK file ownership is root:root')
+    if not hasattr(os, 'getuid') or os.getuid() != 0:
+        parser.error('run with sudo so APK file ownership is root:root')
     ipk.set_epoch(int(os.environ.get('SOURCE_DATE_EPOCH', '0')))
     root = Path(ipk.REPO_ROOT)
     output = Path(args.output).resolve()

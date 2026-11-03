@@ -19,7 +19,7 @@ APK 构建格式参考 [OpenWrt package-pack.mk](https://github.com/openwrt/open
 
 1. 校验后端、两个 Makefile 和构建器版本一致；版本 tag 必须为 `v<源码版本>`。
 2. 运行 Python 测试及 JS 语法检查。
-3. 并行构建两种格式。APK 在 fakeroot 环境生成，确保文件属主为 root:root；由官方工具校验完整性、解包后逐个比对 IPK 的业务文件及权限。
+3. 并行构建两种格式。APK 在 runner 中以 root 身份打包，确保文件属主为 root:root；由官方工具校验完整性、解包后逐个比对 IPK 的业务文件及权限。不会执行包中的路由器维护脚本。
 4. 两种格式均成功后下载四个产物，检查数量与版本，生成 SHA256SUMS 与 BUILDINFO.json。
 5. PR 只保存构建产物；main、手动运行发布预览版；版本 tag 发布正式版。只有发布 job 获取 `contents: write` 权限。
 
@@ -44,14 +44,14 @@ IPK 在 Windows、Linux 和 macOS 上使用 Python 3 标准库构建：
 python tools/build_ipk.py
 ```
 
-APK 需要 Linux x86_64、Python 3.12+、tar、zstd 与 fakeroot。默认工具下载缓存为 `.build/openwrt-apk/`：
+APK 需要 Linux x86_64、Python 3.12+、tar、zstd 与 sudo。默认工具下载缓存为 `.build/openwrt-apk/`。使用实际 root 打包，避免系统 fakeroot 与 ImageBuilder 自带加载器不兼容：
 
 ```sh
-sudo apt-get install fakeroot zstd
+sudo apt-get install zstd
 python tools/fetch_apk_tool.py
 # 将下载器打印的路径代入，或设置 APK_TOOL 环境变量
-fakeroot python tools/build_apk.py --apk-tool /path/to/staging_dir/host/bin/apk
-fakeroot python tools/verify_apk.py --apk-tool /path/to/staging_dir/host/bin/apk
+sudo python3 tools/build_apk.py --apk-tool /path/to/staging_dir/host/bin/apk
+sudo python3 tools/verify_apk.py --apk-tool /path/to/staging_dir/host/bin/apk
 ```
 
 修改维护脚本时，应同步 `tools/packaging/scripts/` 与 Makefile 内的标准 OpenWrt 包定义。APK 包装同一组维护脚本，分别处理安装、升级前后与卸载前后；升级前建立守卫，保留当前接管设置与账本。卸载仍要求先停止接管。

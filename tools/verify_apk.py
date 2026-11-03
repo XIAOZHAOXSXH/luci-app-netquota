@@ -16,7 +16,10 @@ def verify(apk_tool, apk_path, ipk_path):
     metadata = subprocess.check_output([apk_tool, 'adbdump', str(apk_path)], text=True)
     if not re.search(r'\barch:\s*[\"\x27]?noarch\b', metadata):
         raise ValueError('APK must declare arch:noarch')
-    for hook in ('post-install', 'pre-upgrade', 'post-upgrade', 'pre-deinstall', 'post-deinstall'):
+    hooks = ['post-install', 'pre-upgrade', 'post-upgrade', 'pre-deinstall']
+    if apk_path.name.startswith('netquota-'):
+        hooks.append('post-deinstall')
+    for hook in hooks:
         if hook not in metadata:
             raise ValueError('APK lifecycle hook missing: ' + hook)
     with tarfile.open(ipk_path, 'r:gz') as outer:
