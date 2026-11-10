@@ -19,8 +19,7 @@ function derive(status, accounts, updatedAt) {
 		else if (NQ.pct(a.usage_percent) >= ATTENTION_PERCENT)
 			totals.at_risk_count++;
 
-		if (typeof(a.total_bytes) === 'number' && isFinite(a.total_bytes))
-			totals.total_bytes += a.total_bytes;
+		totals.total_bytes += NQ.billedBytes(a);
 		if (typeof(a.quota_bytes) === 'number' && isFinite(a.quota_bytes))
 			totals.quota_bytes += a.quota_bytes;
 	});
@@ -67,13 +66,13 @@ function countCards(model) {
 			foot: _('按账号去重的在线终端')
 		}),
 		NQ.statCard({
-			label: _('当前周期累计'),
+			label: _('本周期计费用量'),
 			icon: 'usage',
 			tone: 'amber',
 			parts: NQ.bytesParts(t.total_bytes, 2),
 			ratio: t.quota_bytes > 0 ? t.total_bytes / t.quota_bytes : 0,
 			gauge: 'amber',
-			foot: _('所有账号上传 + 下载')
+			foot: _('所有账号按计费倍率累计扣减')
 		}),
 		NQ.statCard({
 			label: _('流量用尽'),
@@ -89,19 +88,19 @@ function countCards(model) {
 
 function topUsage(model, fmt) {
 	if (model.items.length === 0)
-		return NQ.panel(_('账号流量使用排行'), _('当前周期已用流量前 %d 名').format(TOP_LIMIT),
+		return NQ.panel(_('账号流量使用排行'), _('当前周期计费用量前 %d 名').format(TOP_LIMIT),
 			E('div', { class: 'nq-empty-inline' }, [ _('暂无账号，创建账号后开始统计流量。') ]));
 
 	var ranked = model.items.slice().sort(function(x, y) {
-		return (Number(y.total_bytes) || 0) - (Number(x.total_bytes) || 0) || String(x.username).localeCompare(String(y.username));
+		return (NQ.billedBytes(y) || 0) - (NQ.billedBytes(x) || 0) || String(x.username).localeCompare(String(y.username));
 	}).slice(0, TOP_LIMIT);
 
 	var max = 0;
-	ranked.forEach(function(a) { max = Math.max(max, Number(a.total_bytes) || 0); });
+	ranked.forEach(function(a) { max = Math.max(max, NQ.billedBytes(a) || 0); });
 
 	var bars = ranked.map(function(a) {
 		var p = NQ.pct(a.usage_percent);
-		var width = max > 0 ? (Math.max(0, Number(a.total_bytes) || 0) / max) * 100 : 0;
+		var width = max > 0 ? (Math.max(0, NQ.billedBytes(a) || 0) / max) * 100 : 0;
 		var level = NQ.usageClass(p);
 
 		return E('li', { class: 'nq-bar-row' }, [
@@ -109,18 +108,18 @@ function topUsage(model, fmt) {
 			E('span', {
 				class: 'nq-bar-track',
 				role: 'progressbar',
-				'aria-label': _('%s：已用 %s，共 %s').format(a.username, NQ.bytes(a.total_bytes), NQ.bytes(a.quota_bytes)),
+				'aria-label': _('%s：已用 %s，共 %s').format(a.username, NQ.bytes(NQ.billedBytes(a)), NQ.bytes(a.quota_bytes)),
 				'aria-valuemin': '0',
 				'aria-valuemax': '100',
 				'aria-valuenow': String(Math.round(p))
 			}, [
 				E('i', { class: 'nq-bar-fill nq-fill-' + level, style: 'width:' + width.toFixed(1) + '%' })
 			]),
-			E('span', { class: 'nq-bar-value' }, [ NQ.bytes(a.total_bytes) ])
+			E('span', { class: 'nq-bar-value' }, [ NQ.bytes(NQ.billedBytes(a)) ])
 		]);
 	});
 
-	return NQ.panel(_('账号流量使用排行'), _('当前周期已用流量前 %d 名').format(TOP_LIMIT),
+	return NQ.panel(_('账号流量使用排行'), _('当前周期计费用量前 %d 名').format(TOP_LIMIT),
 		E('div', {}, [
 			E('div', { class: 'nq-total-line' }, [
 				E('strong', {}, [ NQ.bytes(model.totals.total_bytes) ]),
@@ -193,7 +192,7 @@ function recentTable(model, fmt, ctx) {
 
 	var headers = [
 		{ label: _('账号') },
-		{ label: _('当前周期累计') },
+		{ label: _('本周期计费用量') },
 		{ label: _('周期额度'), cls: 'nq-num' },
 		{ label: _('状态') },
 		{ label: _('结算日恢复'), cls: 'nq-num' },

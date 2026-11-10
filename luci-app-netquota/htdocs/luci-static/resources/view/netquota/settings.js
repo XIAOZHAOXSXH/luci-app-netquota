@@ -177,8 +177,92 @@ function confirmSave(day, tz) {
 	});
 }
 
+function billingPanel(model, ctx) {
+	var current = Number(model.settings.traffic_multiplier_percent) || 100;
+	var input = E('input', {
+		id: 'nq-billing-multiplier', class: 'nq-input', type: 'number',
+		min: '1', max: '5', step: '0.01', value: (current / 100).toFixed(2),
+		'aria-describedby': 'nq-billing-multiplier-help', input: preview
+	});
+	var example = E('p', { class: 'nq-block', role: 'status', 'aria-live': 'polite' });
+	var error = NQ.formError('nq-billing-error');
+	var saveButton;
+
+	function readRate() {
+		var text = String(input.value).trim();
+		if (!/^\d+(\.\d{1,2})?$/.test(text)) return null;
+		var parts = text.split('.');
+		var rate = Number(parts[0]) * 100 + Number(((parts[1] || '') + '00').slice(0, 2));
+		return rate >= 100 && rate <= 500 ? rate : null;
+	}
+
+	function preview() {
+		var rate = readRate();
+		example.textContent = rate == null ? _('请输入 1.00–5.00 之间的倍率，最多两位小数。') :
+			_('实际使用 1 GB，账号扣减 %s GB；100 GB 额度在此倍率下约可实际使用 %s GB。')
+				.format((rate / 100).toFixed(2), (10000 / rate).toFixed(2));
+		if (saveButton) saveButton.disabled = rate == null || rate === current;
+		NQ.setFormError(error, '');
+	}
+
+	function confirm() {
+		var rate = readRate();
+		if (rate == null) {
+			NQ.setFormError(error, _('请输入 1.00–5.00 之间的倍率，最多两位小数。'));
+			return;
+		}
+		if (rate === current) return;
+		NQ.openModal({
+			id: 'nq-billing-confirm', title: _('确认修改全局计费倍率'),
+			subtitle: _('%s 倍 → %s 倍，适用于所有账号').format((current / 100).toFixed(2), (rate / 100).toFixed(2)),
+			build: function(close, md) {
+				var err = NQ.formError('nq-billing-confirm-error');
+				md.submit = NQ.submitGuard(function() {
+					NQ.setFormError(err, '');
+					return NQ.updateBilling(rate).then(function() {
+						close(); ctx.refresh();
+					}, function(e) { md.setBusy(false); NQ.setFormError(err, e.message + ' (' + e.code + ')'); });
+				}, function(busy) { md.setBusy(busy); });
+				return [ NQ.notice(_('保存时先按旧倍率结算已产生的流量，再对后续流量使用新倍率。已有扣减、账号额度和重置日期保持不变。'), 'warn'), err ];
+			},
+			buttons: [ { label: _('取消') }, { label: _('确认并生效'), primary: true,
+				click: function(close, md) { md.submit(); } } ]
+		});
+	}
+
+	saveButton = NQ.actionButton(_('保存计费倍率'), { primary: true, click: function(ev) {
+		ev.preventDefault(); confirm();
+	} });
+	preview();
+	var presets = E('div', { class: 'nq-form-actions' }, [100, 110, 120, 130, 150].map(function(rate) {
+		return NQ.actionButton(rate === 100 ? _('原始计量') : (rate / 100).toFixed(2) + ' 倍', {
+			small: true, click: function(ev) { ev.preventDefault(); input.value = (rate / 100).toFixed(2); preview(); }
+		});
+	}));
+	var history = model.settings.billing_changes || [];
+	return NQ.panel(_('流量计费'), _('全局统一倍率，仅影响后续流量'), E('div', { class: 'nq-stack' }, [
+		E('form', { class: 'nq-form', novalidate: '', submit: function(ev) { ev.preventDefault(); confirm(); } }, [
+			NQ.field('nq-billing-multiplier', _('计费倍率（倍）'), input,
+				_('默认 1.00 倍；允许 1.00–5.00 倍，最多两位小数。上传和下载统一计量。'), true),
+			presets, example,
+			NQ.notice(_('管理员可核对实际流量与计费用量。达到计费额度后自动断网；每月重置用量时保留倍率。')),
+			error, E('div', { class: 'nq-form-actions' }, [saveButton])
+		]),
+		history.length ? E('div', {}, [
+			E('strong', { class: 'nq-block' }, [_('最近倍率变更')]),
+			E('ul', { class: 'nq-rules' }, history.slice(0, 5).map(function(h) {
+				return E('li', { class: 'nq-rule' }, [
+					E('span', { class: 'nq-rule-label' }, [ctx.fmt ? ctx.fmt.datetime(h.changed_at) : '—']),
+					E('span', { class: 'nq-rule-text' }, [(h.old_percent / 100).toFixed(2) + ' → ' + (h.new_percent / 100).toFixed(2) + ' 倍'])
+				]);
+			}))
+		]) : ''
+	]), E('span', { class: 'nq-chip nq-chip-quiet' }, [_('当前 %s 倍').format((current / 100).toFixed(2))]));
+}
+
 function render(model, ctx) {
-	return [
+	return [E('div', { class: 'nq-stack-wide' }, [
+		billingPanel(model, ctx),
 		E('div', { class: 'nq-split nq-split-wide' }, [
 			formPanel(model, ctx),
 			NQ.panel(_('周期规则说明'), _('该策略的实际影响'), E('div', { class: 'nq-stack' }, currentPeriodNote(model.settings, model.accountCount)),
@@ -188,7 +272,7 @@ function render(model, ctx) {
 					if (refresh) refresh.click();
 				} }))
 		])
-	];
+	])];
 }
 
 return view.extend({
@@ -211,7 +295,7 @@ return view.extend({
 			target: handle,
 			title: _('结算设置'),
 			eyebrow: 'SETTINGS',
-			desc: _('设置账号结算周期的默认重置日与时区。'),
+			desc: _('设置全局流量计费倍率、默认重置日与时区。'),
 			refreshSeconds: 30,
 			needsSettings: false,
 			load: this.load,

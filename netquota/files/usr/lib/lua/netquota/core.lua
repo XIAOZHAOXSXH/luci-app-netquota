@@ -29,6 +29,7 @@ local util = require("netquota.util")
 local crypto_mod = require("netquota.crypto")
 local calendar = require("netquota.calendar")
 local db = require("netquota.db")
+local billing = require("netquota.billing")
 
 local core = {}
 
@@ -87,7 +88,7 @@ local METHOD_ARGS = {
   delete_account = { "id" },
   get_traffic = {},
   get_settings = {},
-  update_settings = { "default_reset_day", "timezone" },
+  update_settings = { "default_reset_day", "timezone", "traffic_multiplier_percent" },
   get_portal_info = {},
   portal_login = { "username", "password", "ip", "mac" },
   portal_logout = { "session_token", "csrf_token", "ip", "mac" },
@@ -191,11 +192,18 @@ function core.settings(self)
   local s = {
     default_reset_day = DEFAULT_SETTINGS.default_reset_day,
     timezone = DEFAULT_SETTINGS.timezone,
+    traffic_multiplier_percent = 100,
   }
   -- Stored integers come back as strings in SQLite text columns; normalise.
   local drd = raw.default_reset_day
   if util.is_plain_integer(drd) and drd >= 1 and drd <= 31 then s.default_reset_day = drd end
   if type(raw.timezone) == "string" and calendar.is_valid_zone(raw.timezone) then s.timezone = raw.timezone end
+  if raw.traffic_multiplier_percent ~= nil then
+    if not billing.valid_rate(raw.traffic_multiplier_percent) then
+      return nil, util.error(util.CODES.INTERNAL, "invalid stored billing multiplier")
+    end
+    s.traffic_multiplier_percent = raw.traffic_multiplier_percent
+  end
   s.raw = raw
   return s
 end
@@ -298,6 +306,7 @@ local function ensure_period(self, user, settings, now)
       download_bytes = as_int(row.download_bytes) or 0,
       total_bytes = as_int(row.total_bytes) or 0,
       kernel_quota_used_bytes = as_int(row.kernel_quota_used_bytes) or 0,
+      billed_bytes = as_int(row.billed_bytes), billing_carry = as_int(row.billing_carry) or 0,
       state = row.state,
       closed_at = as_int(row.closed_at),
     }
@@ -380,8 +389,9 @@ local function public_account(self, user, period, settings, now, stats)
   local used_download = period and period.download_bytes or 0
   local total = util.add_safe(used_upload, used_download) or util.MAX_SAFE
   local quota = user.quota_bytes
-  local exhausted = math.max(total, period and period.kernel_quota_used_bytes or 0) >= quota
-  local remaining = exhausted and 0 or (quota - total)
+  local billed = billing.used(period)
+  local exhausted = billed >= quota
+  local remaining = exhausted and 0 or (quota - billed)
   if remaining < 0 then remaining = 0 end
   local pending_day = nil
   if user.pending_kind ~= nil then
@@ -405,8 +415,10 @@ local function public_account(self, user, period, settings, now, stats)
     upload_bytes = used_upload,
     download_bytes = used_download,
     total_bytes = total,
+    billed_bytes = billed,
+    traffic_multiplier_percent = settings.traffic_multiplier_percent,
     remaining_bytes = remaining,
-    usage_percent = util.usage_percent(total, quota),
+    usage_percent = util.usage_percent(billed, quota),
     online = online > 0,
     session_count = online,
     exhausted = exhausted,
@@ -697,15 +709,19 @@ function core.snapshot(self)
     local used = util.add_safe(up, down) or util.MAX_SAFE
     local kernel_used = period and as_int(period.kernel_quota_used_bytes) or 0
     if kernel_used > used then used = kernel_used end
+    local billed = billing.used(period)
+    local real_limit = billing.real_limit(period or {}, user.quota_bytes, settings.traffic_multiplier_percent)
     accounts[#accounts + 1] = {
       id = user.id,
       username = user.username,
       quota_bytes = user.quota_bytes,
+      real_quota_bytes = real_limit,
+      billed_bytes = billed,
       period_id = period and as_int(period.id) or nil,
       upload_bytes = up,
       download_bytes = down,
       quota_used_bytes = used,
-      exhausted = used >= user.quota_bytes,
+      exhausted = billed >= user.quota_bytes,
       sessions = counts[user.id] or {},
     }
   end
@@ -839,17 +855,24 @@ function core._checkpoint_one(self, reading, now, ctx)
   local kernel_used = max_of(as_int(period_row.kernel_quota_used_bytes) or 0, reading.quota_used_bytes)
   local quota = as_int(user_row.quota_bytes)
   if total >= quota and kernel_used < total then kernel_used = total end
+  local settings, serr = core.settings(self)
+  if not settings then return nil, serr end
+  local raw = math.max(total, kernel_used)
+  local delta = math.max(0, raw - billing.raw_used(period_row))
+  local increment, carry = billing.accrue(delta, as_int(period_row.billing_carry) or 0,
+    settings.traffic_multiplier_percent)
+  local billed = util.add_safe(billing.used(period_row), increment) or util.MAX_SAFE
   if kernel_used > util.MAX_SAFE then kernel_used = util.MAX_SAFE end
 
   local ok, cerr = db.exec(self.db,
     "UPDATE usage_periods SET upload_bytes = ?, download_bytes = ?, total_bytes = ?, " ..
-    "kernel_quota_used_bytes = ?, updated_at = ? WHERE id = ?",
-    { up, down, total, kernel_used, now, current_period_id })
+    "kernel_quota_used_bytes = ?, billed_bytes = ?, billing_carry = ?, updated_at = ? WHERE id = ?",
+    { up, down, total, kernel_used, billed, carry, now, current_period_id })
   if not ok then return nil, cerr end
 
   local applied = { applied = true, period_id = current_period_id, upload_bytes = up, download_bytes = down,
     quota_used = kernel_used, user_id = uid }
-  if math.max(total, kernel_used) >= quota then
+  if billed >= quota then
     local revoked = self:_revoke_user_network(uid, "quota", now)
     applied.revoked = revoked
     journal(self, "quota_exhausted", { user_id = uid, total = total, quota = quota, revoked = revoked,
@@ -1027,6 +1050,7 @@ local function account_list(self, filter)
       download_bytes = as_int(period.download_bytes) or 0,
       total_bytes = as_int(period.total_bytes) or 0,
       kernel_quota_used_bytes = as_int(period.kernel_quota_used_bytes) or 0,
+      billed_bytes = as_int(period.billed_bytes), billing_carry = as_int(period.billing_carry) or 0,
     } or nil
     local acct = public_account(self, u, p, settings, now, { online = online[u.id] or 0 })
     acct.session_count = online[u.id] or 0
@@ -1053,7 +1077,7 @@ local function account_list(self, filter)
   end
   table.sort(out, function(a, b)
     if sort == "usage" then
-      if a.total_bytes ~= b.total_bytes then return a.total_bytes > b.total_bytes end
+      if a.billed_bytes ~= b.billed_bytes then return a.billed_bytes > b.billed_bytes end
       return a.username:lower() < b.username:lower()
     elseif sort == "username" then
       return a.username:lower() < b.username:lower()
@@ -1152,7 +1176,7 @@ local function method_get_summary(self)
   local accounts = #items
   local online = 0
   local exhausted = 0
-  local upload, download = 0, 0
+  local upload, download, billed = 0, 0, 0
   local quota = 0
   for _, it in ipairs(items) do
     if it.online then online = online + 1 end
@@ -1160,9 +1184,10 @@ local function method_get_summary(self)
     upload = util.add_safe(upload, it.upload_bytes) or util.MAX_SAFE
     download = util.add_safe(download, it.download_bytes) or util.MAX_SAFE
     quota = util.add_safe(quota, it.quota_bytes) or util.MAX_SAFE
+    billed = util.add_safe(billed, it.billed_bytes) or util.MAX_SAFE
   end
   local total = util.add_safe(upload, download) or util.MAX_SAFE
-  local remaining = quota - total
+  local remaining = quota - billed
   if remaining < 0 then remaining = 0 end
   local tz = settings.timezone
   local now = self:now()
@@ -1178,7 +1203,9 @@ local function method_get_summary(self)
     total_bytes = total,
     quota_bytes = quota,
     remaining_bytes = remaining,
-    usage_percent = util.usage_percent(total, quota > 0 and quota or 1),
+    billed_bytes = billed,
+    traffic_multiplier_percent = settings.traffic_multiplier_percent,
+    usage_percent = util.usage_percent(billed, quota > 0 and quota or 1),
     default_reset_day = settings.default_reset_day,
     timezone = tz,
     period_start_at = start_at,
@@ -1376,7 +1403,7 @@ local function update_account(self, args)
     if not user then return nil, util.error(util.CODES.NOT_FOUND, "account not found") end
     local period, perr = ensure_period(self, user, settings, now)
     if not period then return nil, perr end
-    local used = util.add_safe(period.upload_bytes, period.download_bytes) or util.MAX_SAFE
+    local used = billing.used(period)
 
     if hashed then
       local uok, uerr = db.exec(self.db, "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
@@ -1470,6 +1497,8 @@ local function method_get_traffic(self)
       upload_bytes = it.upload_bytes,
       download_bytes = it.download_bytes,
       total_bytes = it.total_bytes,
+      billed_bytes = it.billed_bytes,
+      traffic_multiplier_percent = it.traffic_multiplier_percent,
       quota_bytes = it.quota_bytes,
       remaining_bytes = it.remaining_bytes,
       usage_percent = it.usage_percent,
@@ -1512,6 +1541,8 @@ local function method_get_settings(self)
   return util.ok({
     default_reset_day = settings.default_reset_day,
     timezone = settings.timezone,
+    traffic_multiplier_percent = settings.traffic_multiplier_percent,
+    billing_changes = db.query(self.db, "SELECT changed_at, old_percent, new_percent FROM billing_changes ORDER BY id DESC LIMIT 20") or {},
     supported_timezones = calendar.supported_zones(),
     accounts = accounts,
     config = cfg,
@@ -1521,7 +1552,13 @@ local function method_get_settings(self)
 end
 
 local function method_update_settings(self, args)
-  local new_day, new_tz
+  local new_day, new_tz, new_rate
+  if args.traffic_multiplier_percent ~= nil then
+    if not billing.valid_rate(args.traffic_multiplier_percent) then
+      return util.error(util.CODES.INVALID_ARGUMENT, "traffic_multiplier_percent must be an integer from 100 to 500")
+    end
+    new_rate = args.traffic_multiplier_percent
+  end
   if args.default_reset_day ~= nil then
     local e
     new_day, e = util.reset_day(args.default_reset_day, "default_reset_day")
@@ -1535,7 +1572,7 @@ local function method_update_settings(self, args)
     end
     new_tz = args.timezone
   end
-  if new_day == nil and new_tz == nil then
+  if new_day == nil and new_tz == nil and new_rate == nil then
     return util.error(util.CODES.INVALID_ARGUMENT, "no fields to update")
   end
   local settings, serr = core.settings(self)
@@ -1586,6 +1623,15 @@ local function method_update_settings(self, args)
       if not tok then return nil, terr end
       journal(self, "timezone_changed", { value = new_tz })
     end
+    if new_rate and new_rate ~= settings.traffic_multiplier_percent then
+      local rok, rerr = put_setting(self, "traffic_multiplier_percent", new_rate, now)
+      if not rok then return nil, rerr end
+      local hok, herr = db.exec(self.db,
+        "INSERT INTO billing_changes(changed_at, old_percent, new_percent) VALUES(?,?,?)",
+        { now, settings.traffic_multiplier_percent, new_rate })
+      if not hok then return nil, herr end
+      journal(self, "traffic_multiplier_changed", { old_percent = settings.traffic_multiplier_percent, new_percent = new_rate })
+    end
     return { staged = staged }
   end)
   if not ok_tx then return util.error(util.CODES.INTERNAL, "settings update failed") end
@@ -1595,6 +1641,7 @@ local function method_update_settings(self, args)
   return util.ok({
     default_reset_day = after.default_reset_day,
     timezone = after.timezone,
+    traffic_multiplier_percent = after.traffic_multiplier_percent,
     staged_accounts = #staged,
     updated_at = now,
   })
@@ -1720,8 +1767,8 @@ local function portal_login(self, args)
     if not fresh then return nil, util.error(util.CODES.AUTH_FAILED, GENERIC_LOGIN_ERROR) end
     local period, perr = ensure_period(self, fresh, settings, now)
     if not period then return nil, perr end
-    local used = util.add_safe(period.upload_bytes, period.download_bytes) or util.MAX_SAFE
-    local exhausted = math.max(used, as_int(period.kernel_quota_used_bytes) or 0) >= fresh.quota_bytes
+    local used = billing.used(period)
+    local exhausted = used >= fresh.quota_bytes
     local changed, sid = db.exec(self.db,
       "INSERT INTO portal_sessions(token_hash, csrf_hash, user_id, ip_address, mac_address, created_at, last_seen_at, expires_at) " ..
       "VALUES(?,?,?,?,?,?,?,?)",
@@ -1810,6 +1857,8 @@ local function portal_my_account(self, args)
     upload_bytes = as_int(period.upload_bytes) or 0,
     download_bytes = as_int(period.download_bytes) or 0,
     total_bytes = as_int(period.total_bytes) or 0,
+    kernel_quota_used_bytes = as_int(period.kernel_quota_used_bytes) or 0,
+    billed_bytes = as_int(period.billed_bytes), billing_carry = as_int(period.billing_carry) or 0,
   }
   local online = db.scalar(self.db,
     "SELECT COUNT(*) FROM network_sessions WHERE user_id = ? AND state = 'online'", { user.id }) or 0
@@ -1925,12 +1974,12 @@ function core.tick(self)
       local u = normalize_user(row)
       local period, perr = ensure_period(self, u, settings, now)
       if not period then return nil, perr end
-      local used = util.add_safe(period.upload_bytes, period.download_bytes) or util.MAX_SAFE
+      local used = billing.used(period)
       local old_sessions, old_err = db.exec(self.db,
         "UPDATE network_sessions SET state = 'revoked', revoked_at = ?, revoke_reason = 'period' " ..
         "WHERE user_id = ? AND state = 'online' AND period_id <> ?", { now, u.id, period.id })
       if old_sessions == nil then return nil, old_err end
-      if math.max(used, as_int(period.kernel_quota_used_bytes) or 0) >= u.quota_bytes then
+      if used >= u.quota_bytes then
         local n = revoke_network_for_user(self, u.id, "quota", now)
         if n > 0 then
           revoked = revoked + n

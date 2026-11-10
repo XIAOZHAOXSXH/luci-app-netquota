@@ -18,13 +18,15 @@ def main():
     parser.add_argument('--fingerprint',required=True)
     parser.add_argument('--timeout',type=float,default=300)
     parser.add_argument('--network',action='store_true')
+    parser.add_argument('--billing-network',action='store_true',
+                        help='run billing packets through separate lab-only nft tables; preserves live Guest rules')
     parser.add_argument('--temporary-disable-hnat',action='store_true',
                         help='temporarily disable the GL runtime HNAT hook for the lab; restore its configured state on exit')
     args=parser.parse_args()
     archive=io.BytesIO()
     with tarfile.open(fileobj=archive,mode='w:gz') as tar:
         files=[(p,'lua/netquota/'+p.name) for p in sorted((ROOT/'netquota/files/usr/lib/lua/netquota').glob('*.lua'))]
-        files += [(ROOT/'tests'/n,'tests/'+n) for n in ('test_domain.lua','test_rules.lua','test_portal.lua','test_deployment.lua','test_forwarding.lua','router-lab.sh')]
+        files += [(ROOT/'tests'/n,'tests/'+n) for n in ('test_domain.lua','test_rules.lua','test_portal.lua','test_deployment.lua','test_forwarding.lua','test_billing_forwarding.lua','router-lab.sh')]
         for source,name in files:
             data=source.read_bytes().replace(b'\r\n',b'\n')
             member=tarfile.TarInfo(name); member.size=len(data); member.mode=0o644
@@ -40,6 +42,14 @@ def main():
         conn.run(prefix+'lua '+STAGE+'/tests/test_domain.lua')
         conn.run(prefix+'lua '+STAGE+'/tests/test_portal.lua')
         conn.run(prefix+'lua '+STAGE+'/tests/test_deployment.lua')
+        if args.billing_network:
+            conn.run('sh '+STAGE+'/tests/router-lab.sh setup')
+            try:
+                conn.run(prefix+'lua '+STAGE+'/tests/test_billing_forwarding.lua')
+            finally:
+                conn.run('nft delete table inet netquota_billing_lab 2>/dev/null; '
+                         'nft delete table inet netquota_billing_guard 2>/dev/null; '
+                         'sh '+STAGE+'/tests/router-lab.sh cleanup')
         if args.network:
             conn.run('sh '+STAGE+'/tests/router-lab.sh setup')
             try:

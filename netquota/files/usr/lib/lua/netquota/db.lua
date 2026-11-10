@@ -3,7 +3,7 @@
 -- Responsibilities:
 --   * open (never overwrite) or create the database with safe permissions
 --   * apply PRAGMAs: foreign_keys, busy_timeout, WAL + synchronous=FULL
---   * schema migrations tracked with PRAGMA user_version (current version 1)
+--   * schema migrations tracked with PRAGMA user_version (current version 2)
 --   * strict prepared-statement binding helpers; every value is bound, never interpolated
 --   * a coarse atomic transaction helper (BEGIN IMMEDIATE ... COMMIT/ROLLBACK)
 --
@@ -13,7 +13,7 @@ local util = require("netquota.util")
 
 local db = {}
 
-db.SCHEMA_VERSION = 1
+db.SCHEMA_VERSION = 2
 db.DIR_MODE = "0700"
 db.FILE_MODE = "0600"
 db.BUSY_TIMEOUT_MS = 5000
@@ -215,23 +215,51 @@ local function apply_schema(handle)
 end
 
 local function migrate(handle)
+  -- Serialize first-open migrations across daemon, rpcd and portal processes.
+  if handle:exec('BEGIN IMMEDIATE') ~= sqlite().OK then
+    return nil, db_error('cannot lock schema migration')
+  end
+  local function finish(ok, info)
+    if not ok then handle:exec('ROLLBACK'); return nil, info end
+    if handle:exec('COMMIT') ~= sqlite().OK then
+      handle:exec('ROLLBACK'); return nil, db_error('cannot commit schema migration')
+    end
+    return true, info
+  end
   local version, err = user_version(handle)
-  if not version then return nil, db_error("cannot read user_version: " .. tostring(err)) end
+  if not version then return finish(nil, db_error("cannot read user_version: " .. tostring(err))) end
+  local original = version
   if version == 0 then
-    if not apply_schema(handle) then return nil, db_error("schema creation failed") end
-    local sv = set_user_version(handle, db.SCHEMA_VERSION)
-    if not sv then return nil, db_error("cannot set user_version") end
-    return true, { from = 0, to = db.SCHEMA_VERSION, created = true }
+    if not apply_schema(handle) then return finish(nil, db_error("schema creation failed")) end
+    version = 1
+  end
+  if version == 1 then
+    local sql = [[
+ALTER TABLE usage_periods ADD COLUMN billed_bytes INTEGER NOT NULL DEFAULT 0 CHECK (billed_bytes >= 0);
+ALTER TABLE usage_periods ADD COLUMN billing_carry INTEGER NOT NULL DEFAULT 0 CHECK (billing_carry BETWEEN 0 AND 99);
+UPDATE usage_periods SET billed_bytes = MAX(total_bytes, kernel_quota_used_bytes);
+CREATE TABLE billing_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  changed_at INTEGER NOT NULL,
+  old_percent INTEGER NOT NULL CHECK (old_percent BETWEEN 100 AND 500),
+  new_percent INTEGER NOT NULL CHECK (new_percent BETWEEN 100 AND 500)
+);
+]]
+    if handle:exec(sql) ~= sqlite().OK then
+      return finish(nil, db_error('billing schema migration failed: '..handle:errmsg()))
+    end
+    if not set_user_version(handle, 2) then return finish(nil, db_error('cannot set schema version')) end
+    version = 2
   end
   if version == db.SCHEMA_VERSION then
-    return true, { from = version, to = version, created = false }
+    return finish(true, { from = original, to = version, created = original == 0 })
   end
   if version > db.SCHEMA_VERSION then
-    return nil, db_error(string.format("database schema version %d is newer than supported %d", version, db.SCHEMA_VERSION))
+    return finish(nil, db_error(string.format("database schema version %d is newer than supported %d", version, db.SCHEMA_VERSION)))
   end
   -- Future migrations (v1 -> vN) are applied here as ordered steps. v1 is the first
   -- released schema, so any lower version is unknown and must not be modified.
-  return nil, db_error(string.format("no migration path from schema version %d", version))
+  return finish(nil, db_error(string.format("no migration path from schema version %d", version)))
 end
 
 ----------------------------------------------------------------------------

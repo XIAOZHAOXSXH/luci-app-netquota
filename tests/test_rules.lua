@@ -10,6 +10,10 @@ local _,count=text:gsub(' quota q_7 {','')
 assert(count==1,'account must have one shared budget')
 assert(not contains(text,'quota qu_') and not contains(text,'quota qd_'))
 assert(contains(text,'until 10000 bytes used 3000 bytes'))
+-- Account quota is billed bytes; nft receives the converted real-byte threshold.
+a.real_quota_bytes=7667
+assert(contains(N.rules(cfg,{a}),'until 7667 bytes used 3000 bytes'))
+a.real_quota_bytes=nil
 local _,uses=text:gsub('quota name "q_7"','')
 assert(uses==4,'two clients in both directions share the object')
 assert(contains(text,'quota name "q_7" counter name "u_7" accept'))

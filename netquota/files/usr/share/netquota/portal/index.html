@@ -7,7 +7,7 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="color-scheme" content="light dark">
 <title>NetQuota 上网认证</title>
-<link rel="stylesheet" href="/portal.css?v=0.5.1">
+<link rel="stylesheet" href="/portal.css?v=0.6.0">
 <link rel="icon" href="data:,">
 </head>
 <body>
@@ -79,19 +79,19 @@
 
     <dl class="stats">
       <div class="stat">
-        <dt>已用流量</dt>
+        <dt>已用计费流量</dt>
         <dd><span id="acct-used">—</span> <span class="muted">/ <span id="acct-quota">—</span></span></dd>
       </div>
       <div class="stat">
-        <dt>剩余流量</dt>
+        <dt>剩余额度</dt>
         <dd id="acct-remaining">—</dd>
       </div>
       <div class="stat">
-        <dt>上传</dt>
+        <dt>实际上传</dt>
         <dd id="acct-up">—</dd>
       </div>
       <div class="stat">
-        <dt>下载</dt>
+        <dt>实际下载</dt>
         <dd id="acct-down">—</dd>
       </div>
     </dl>
@@ -108,7 +108,9 @@
       </div>
     </div>
 
+    <p class="help">额度按计费用量扣减。当前倍率 <span id="acct-rate">—</span>，仅影响后续流量；修改倍率不会重算已有用量。</p>
     <dl class="meta">
+      <div><dt>实际流量合计</dt><dd id="acct-raw">—</dd></div>
       <div><dt>本周期开始</dt><dd id="acct-period-start">—</dd></div>
       <div><dt>下次结算</dt><dd id="acct-period-end">—</dd></div>
       <div><dt>在线终端</dt><dd id="acct-sessions">—</dd></div>
@@ -175,6 +177,6 @@
   </footer>
 </main>
 
-<script src="/portal.js?v=0.5.1"></script>
+<script src="/portal.js?v=0.6.0"></script>
 </body>
 </html>

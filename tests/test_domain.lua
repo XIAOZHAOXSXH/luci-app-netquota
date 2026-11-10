@@ -1336,6 +1336,152 @@ test("untrusted time cannot create accounts or reset periods", function()
   service:close()
 end)
 
+-- Billing tests use a separate file and never touch the installed service database.
+local billing = require('netquota.billing')
+local BILL_DB = TMP_DB .. '.billing'
+local function billing_service()
+  remove_db_files(BILL_DB)
+  set_now(local_epoch(2026, 11, 10, 12, 0, 0))
+  return new_service({db_path=BILL_DB})
+end
+local function bill_account(service, name, quota)
+  local r = rq(service, 'create_account', {username=name, password='Billing-test-123', quota_bytes=quota})
+  assert(r.ok, r.error and r.error.message)
+  return r.data.id
+end
+local function observe(service, id, up, down, kernel)
+  local r = service:request('checkpoint', {readings={{user_id=id,
+    upload_bytes=up, download_bytes=down, quota_used_bytes=kernel}}})
+  assert(r.ok, r.error and r.error.message)
+  return rq(service, 'get_account', {id=id}).data
+end
+
+test('billing: exact arithmetic, small increments and large limits', function()
+  local total, carry = 0, 0
+  for i=1,100 do
+    local increment
+    increment, carry = billing.accrue(1, carry, 123)
+    total = total + increment
+  end
+  check_equal(total, 123, 'one-byte checkpoints retain all fractional usage')
+  check_equal(carry, 0, 'carry settles exactly')
+  local max = util.MAX_SAFE
+  check_equal(billing.accrue(max, 0, 100), max, 'max safe integer at 1x is exact')
+  check_equal(billing.accrue(max-92, 0, 100), max-92, 'division near an integer never rounds up')
+  check_equal(billing.accrue(max, 0, 500), max, 'overflow saturates conservatively')
+  check_equal(billing.real_limit({billed_bytes=0,total_bytes=0}, max, 100), max, 'maximum inverse budget stays exact')
+  check_equal(billing.real_limit({billed_bytes=0,total_bytes=0,billing_carry=99}, 1, 500), 1, 'fractional final byte uses ceil')
+end)
+
+test('billing: global rate affects future bytes only and survives reopen', function()
+  local service = billing_service()
+  local id = bill_account(service, 'billing_future', 100000)
+  check_equal(rq(service,'get_settings',{}).data.traffic_multiplier_percent,100,'default is 1x')
+  local a = observe(service,id,1200,800,2000)
+  check_equal(a.billed_bytes,2000,'old bytes billed at 1x')
+  check(rq(service,'update_settings',{traffic_multiplier_percent=120}).ok,'set 1.2x')
+  a = observe(service,id,1800,1200,3000)
+  check_equal(a.total_bytes,3000,'raw direction total preserved')
+  check_equal(a.billed_bytes,3200,'only new bytes multiplied')
+  check_equal(a.remaining_bytes,96800,'remaining uses billed bytes')
+  check_equal(observe(service,id,1800,1200,3000).billed_bytes,3200,'duplicate snapshots do not double charge')
+  check_equal(observe(service,id,1700,1100,2800).billed_bytes,3200,'stale lower counters do not refund')
+  service:close()
+  service=new_service({db_path=BILL_DB})
+  check_equal(rq(service,'get_settings',{}).data.traffic_multiplier_percent,120,'global rate persists')
+  check(rq(service,'update_settings',{traffic_multiplier_percent=100}).ok,'restore 1x')
+  a = observe(service,id,2400,1600,4000)
+  check_equal(a.billed_bytes,4200,'restore does not recalculate earlier bytes')
+  check_equal(rq(service,'get_traffic',{}).data.items[1].billed_bytes,4200,'traffic API includes billed bytes')
+  check_equal(rq(service,'get_summary',{}).data.billed_bytes,4200,'summary uses billed total')
+  local history = rq(service,'get_settings',{}).data.billing_changes
+  check_equal(#history,2,'durable change history')
+  check_equal(history[1].old_percent,120,'history records previous rate')
+  check_equal(history[1].new_percent,100,'history records new rate')
+  service:close(); remove_db_files(BILL_DB)
+end)
+
+test('billing: carry, quota limits, edits and monthly reset', function()
+  local service = billing_service()
+  local id = bill_account(service,'billing_carry',1000)
+  check(rq(service,'update_settings',{traffic_multiplier_percent=123}).ok,'set 1.23x')
+  observe(service,id,1,0,1)
+  service:close(); service=new_service({db_path=BILL_DB})
+  local a = observe(service,id,100,0,100)
+  check_equal(a.billed_bytes,123,'fractional carry survives process restart')
+  local snap = service:snapshot().accounts[1]
+  check_equal(snap.real_quota_bytes,814,'kernel threshold reflects remaining billed budget')
+  check(rq(service,'update_settings',{traffic_multiplier_percent=120}).ok,'switch to 1.2x')
+  a = observe(service,id,101,0,101)
+  check_equal(a.billed_bytes,124,'new rate applied without losing fractional carry')
+  check(rq(service,'update_account',{id=id,quota_bytes=124}).ok,'lower quota')
+  check(rq(service,'get_account',{id=id}).data.exhausted,'quota edit compares billed usage')
+  check(service:snapshot().accounts[1].exhausted,'snapshot blocks exhausted account')
+  check(rq(service,'update_account',{id=id,quota_bytes=1000}).ok,'increase quota')
+  local before = rq(service,'get_account',{id=id}).data
+  set_now(before.period_end_at)
+  check(service:request('tick',{}).ok,'rollover succeeds')
+  a=rq(service,'get_account',{id=id}).data
+  check_equal(a.billed_bytes,0,'monthly reset clears billed usage')
+  check_equal(a.total_bytes,0,'monthly reset clears raw usage')
+  check_equal(a.traffic_multiplier_percent,120,'monthly reset keeps global rate')
+  a=observe(service,id,500,0,834)
+  check_equal(a.billed_bytes,1000,'quota high-water bytes also receive the multiplier')
+  check(a.exhausted,'kernel exhaustion cannot be bypassed by low directional counters')
+  service:close(); remove_db_files(BILL_DB)
+end)
+
+test('billing: strict validation and transactional guard settlement', function()
+  local service=billing_service()
+  local id=bill_account(service,'billing_guard',10000)
+  for _,rate in ipairs({99,501,120.5,'120',false,0/0,math.huge}) do
+    check_error(rq(service,'update_settings',{traffic_multiplier_percent=rate}),util.CODES.INVALID_ARGUMENT,'reject invalid rate')
+  end
+  -- A settings write first settles frozen kernel readings at the OLD multiplier.
+  local observed={}
+  local installed
+  service.opts.network={freeze=function() return true end, thaw=function() return true end,
+    snapshot=function() return observed end,
+    install=function(_,snap) installed=snap; return true end}
+  observed={{user_id=id,upload_bytes=2000,download_bytes=0,quota_used_bytes=2000}}
+  check(rq(service,'update_settings',{traffic_multiplier_percent=150}).ok,'guarded rate change')
+  check_equal(rq(service,'get_account',{id=id}).data.billed_bytes,2000,'old snapshot settled before new rate')
+  check_equal(installed.accounts[1].real_quota_bytes,7334,'new kernel budget installed from remaining quota')
+  observed={{user_id=id,upload_bytes=3000,download_bytes=0,quota_used_bytes=3000}}
+  check(service:request('tick',{}).ok,'new traffic settled')
+  check_equal(rq(service,'get_account',{id=id}).data.billed_bytes,3500,'new increment uses new rate')
+  -- A rejected settings transaction retains the already settled old-rate reading.
+  dbmod.exec(service.db, "CREATE TRIGGER reject_billing_change BEFORE INSERT ON billing_changes BEGIN SELECT RAISE(ABORT, 'test rollback'); END")
+  observed={{user_id=id,upload_bytes=4000,download_bytes=0,quota_used_bytes=4000}}
+  check(not rq(service,'update_settings',{traffic_multiplier_percent=200}).ok,'failed journal insert rejects update')
+  check_equal(rq(service,'get_settings',{}).data.traffic_multiplier_percent,150,'failed transaction keeps rate')
+  check_equal(rq(service,'get_account',{id=id}).data.billed_bytes,5000,'failed setting still settles real traffic at old rate')
+  dbmod.exec(service.db,'DROP TRIGGER reject_billing_change')
+  check(service:request('tick',{}).ok,'reconcile after failure')
+  check_equal(rq(service,'get_account',{id=id}).data.billed_bytes,5000,'reconciliation charges outstanding bytes once')
+  service:close(); remove_db_files(BILL_DB)
+end)
+
+test('billing: schema v1 migration preserves historical usage', function()
+  remove_db_files(BILL_DB)
+  local L=require('lsqlite3')
+  local handle=assert(L.open(BILL_DB))
+  assert(handle:exec(dbmod.SCHEMA_V1)==L.OK)
+  assert(handle:exec("PRAGMA user_version=1; INSERT INTO users(id,username,username_key,password_hash,quota_bytes,created_at,updated_at) VALUES(1,'legacy','legacy','unused',10000,1,1); INSERT INTO usage_periods(user_id,period_start_at,period_end_at,reset_day_applied,upload_bytes,download_bytes,total_bytes,kernel_quota_used_bytes,state,created_at,updated_at) VALUES(1,1,2,1,20,30,50,60,'closed',1,1);")==L.OK)
+  handle:close()
+  local service=new_service({db_path=BILL_DB})
+  local row=dbmod.query_one(service.db,'SELECT * FROM usage_periods')
+  check_equal(row.total_bytes,50,'migration retains original raw total')
+  check_equal(row.billed_bytes,60,'migration retains effective original high-water usage')
+  check_equal(row.billing_carry,0,'migration starts with no fractional charge')
+  check_equal(row.state,'closed','closed history remains closed')
+  check_equal(rq(service,'get_settings',{}).data.traffic_multiplier_percent,100,'migration defaults to 1x')
+  service:close()
+  service=new_service({db_path=BILL_DB})
+  check_equal(dbmod.query_one(service.db,'SELECT billed_bytes FROM usage_periods').billed_bytes,60,'migration is idempotent')
+  service:close(); remove_db_files(BILL_DB)
+end)
+
 set_now(os.time())
 remove_db_files(TMP_DB)
 

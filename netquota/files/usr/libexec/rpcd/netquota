@@ -135,6 +135,7 @@ local METHODS = {
   get_traffic = {},
   get_settings = {},
   update_settings = {
+    traffic_multiplier_percent = int64(),
     default_reset_day = int64(),
     timezone = string_arg(),
   },
@@ -168,7 +169,7 @@ end
 
 -- rpcd may deliver INT64 as a numeric string. Convert only plain digit strings; everything
 -- else passes through untouched so the domain rejects it as an invalid type.
-local NUMERIC_KEYS = { "id", "quota_bytes", "reset_day", "default_reset_day", "limit" }
+local NUMERIC_KEYS = { "id", "quota_bytes", "reset_day", "default_reset_day", "traffic_multiplier_percent", "limit" }
 local function normalise_numeric(args)
   if type(args) ~= "table" then return args end
   for _, key in ipairs(NUMERIC_KEYS) do

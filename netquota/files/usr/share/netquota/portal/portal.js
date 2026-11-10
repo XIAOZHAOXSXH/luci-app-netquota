@@ -207,6 +207,8 @@
     setText('acct-quota', fmtBytes(quota));
     setText('acct-remaining', fmtBytes(remaining));
     setText('acct-up', fmtBytes(up));
+    setText('acct-raw', fmtBytes(Number(acct.total_bytes || 0)));
+    setText('acct-rate', ((Number(acct.traffic_multiplier_percent) || 100) / 100).toFixed(2) + ' 倍');
     setText('acct-down', fmtBytes(down));
     setText('acct-percent', p + '%');
     setText('acct-period-start', fmtTime(acct.period_start_at));

@@ -8,8 +8,8 @@ APK 构建格式参考 [OpenWrt package-pack.mk](https://github.com/openwrt/open
 
 | 输出 | 版本示例 | 架构字段 |
 | --- | --- | --- |
-| IPK | `netquota_0.5.1_all.ipk` | `all` |
-| APKv3 | `netquota-0.5.1-r1.apk` | `noarch` |
+| IPK | `netquota_0.6.0_all.ipk` | `all` |
+| APKv3 | `netquota-0.6.0-r1.apk` | `noarch` |
 
 构建 APK 不等于完成新版 OpenWrt / fw4 的运行适配。当前设备验收仍限于 README 中列出的固件。
 
@@ -30,8 +30,8 @@ APK 构建格式参考 [OpenWrt package-pack.mk](https://github.com/openwrt/open
 将两个包 Makefile、`tools/build_ipk.py` 的版本、`netquota/files/usr/lib/lua/netquota/util.lua` 运行版本及门户资源版本统一更新，完成测试并提交到 main。然后推送对应标签，例如：
 
 ```sh
-git tag v0.5.1
-git push origin v0.5.1
+git tag v0.6.0
+git push origin v0.6.0
 ```
 
 不要将不同源码重用同一个正式版本标签。修订源码应增加版本号再发布。构建产物保存在 Release / Actions，不进入 Git 源码。
@@ -68,8 +68,12 @@ Python 测试包含源码白名单、包权限、配置保留与 APK 生命周�
 
 ```sh
 python tools/test_on_router.py --fingerprint <设备SSH指纹>
+# 专用测试设备：独立网络与 nft 表验证倍率，不替换正在运行的 Guest 规则
+python tools/test_on_router.py --fingerprint <设备SSH指纹> --billing-network
 ```
 
 `--network`、`tests/router-guest-client.sh` 等夹具会创建临时网络，必须在专用测试设备上明确运行并清理。浏览器脚本使用真实 LuCI / RPC，需要先登录管理页面。CI 不连接路由器，也不将静态构建成功当成设备验收。
+
+`tests/browser-billing.js` 验证倍率保存、取消、参数范围、历史记录、亮暗主题和手机布局；会短暂修改全局倍率，并在结束时恢复原值。请仅在专用测试设备执行。
 
 原始设备转储、本机测试状态与生成包保留在被 Git 忽略的目录中；公开的兼容性结论见 `docs/compatibility/` 与测试修订记录。

@@ -49,6 +49,15 @@ assert(#data.data.csrf_token==64)
 local csrf=data.data.csrf_token
 local env={HTTP_COOKIE='nq_session='..token}
 data=expect(200,'GET','/account',nil,env); assert(data.data.account.username=='http_alice')
+-- The guest API uses billed bytes for progress while retaining real direction counters.
+local meter=assert(core.open{db_path=db,admin=true})
+assert(meter:request('update_settings',{traffic_multiplier_percent=150}).ok)
+assert(meter:request('checkpoint',{readings={{user_id=1,upload_bytes=400,download_bytes=600,quota_used_bytes=1000}}}).ok)
+meter:close()
+data=expect(200,'GET','/account',nil,env)
+assert(data.data.account.used_bytes==1500 and data.data.account.billed_bytes==1500)
+assert(data.data.account.total_bytes==1000 and data.data.account.upload_bytes==400 and data.data.account.download_bytes==600)
+assert(data.data.account.traffic_multiplier_percent==150 and data.data.account.remaining_bytes==50000000000-1500)
 expect(401,'GET','/account',nil,{HTTP_COOKIE='nq_session='..string.rep('0',64)})
 expect(403,'POST','/password',{old_password='Alice-test-123',new_password='Changed-123',confirm_password='Changed-123'},env)
 env.HTTP_X_CSRF_TOKEN=string.rep('0',64)

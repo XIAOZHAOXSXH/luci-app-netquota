@@ -8,12 +8,13 @@
  */
 
 function totalsOf(items) {
-	var t = { upload: 0, download: 0, total: 0, quota: 0, measured: 0, unknown: 0 };
+	var t = { upload: 0, download: 0, total: 0, raw: 0, quota: 0, measured: 0, unknown: 0 };
 
 	items.forEach(function(a) {
 		var up = Number(a.upload_bytes);
 		var down = Number(a.download_bytes);
-		var total = Number(a.total_bytes);
+		var total = NQ.billedBytes(a);
+		t.raw += Number(a.total_bytes) || 0;
 
 		if (isFinite(up) && isFinite(down)) {
 			t.upload += up;
@@ -45,37 +46,37 @@ function share(part, whole) {
 
 function summaryCards(model) {
 	var t = model.totals;
-	var upShare = share(t.upload, t.total);
-	var downShare = share(t.download, t.total);
+	var upShare = share(t.upload, t.raw);
+	var downShare = share(t.download, t.raw);
 	var quotaUse = share(t.total, t.quota);
 
 	return E('div', { class: 'nq-cards' }, [
 		NQ.statCard({
-			label: _('当前周期累计流量'),
+			label: _('本周期计费用量'),
 			icon: 'total',
 			tone: 'blue',
 			parts: NQ.bytesParts(t.total),
 			ratio: quotaUse / 100,
 			gauge: quotaUse >= 100 ? 'red' : (quotaUse >= 80 ? 'amber' : 'blue'),
-			foot: _('上传 + 下载总和')
+			foot: _('实际上传 + 下载：%s').format(NQ.bytes(t.raw))
 		}),
 		NQ.statCard({
-			label: _('上传流量'),
+			label: _('实际上传'),
 			icon: 'upload',
 			tone: 'green',
 			parts: NQ.bytesParts(t.upload),
 			ratio: upShare / 100,
 			gauge: 'green',
-			foot: _('占总体用量 %s%%').format(NQ.pctLabel(upShare))
+			foot: _('占实际流量 %s%%').format(NQ.pctLabel(upShare))
 		}),
 		NQ.statCard({
-			label: _('下载流量'),
+			label: _('实际下载'),
 			icon: 'download',
 			tone: 'amber',
 			parts: NQ.bytesParts(t.download),
 			ratio: downShare / 100,
 			gauge: 'amber',
-			foot: _('占总体用量 %s%%').format(NQ.pctLabel(downShare))
+			foot: _('占实际流量 %s%%').format(NQ.pctLabel(downShare))
 		}),
 		NQ.statCard({
 			label: _('账号配额总量'),
@@ -96,13 +97,13 @@ function sharedBar(model) {
 	return NQ.panel(_('共享额度消耗'), _('各账号使用各自月度额度，此处为合计'), E('div', {}, [
 		E('div', { class: 'nq-total-line' }, [
 			E('strong', {}, [ NQ.bytes(t.total) ]),
-			E('span', {}, [ _('已用，共') ]),
+			E('span', {}, [ _('计费用量，共') ]),
 			E('strong', {}, [ NQ.bytes(t.quota) ])
 		]),
 		NQ.usageTrack(p, _('合计额度使用率 %s').format(NQ.pctLabel(p) + '%')),
 		E('div', { class: 'nq-legend' }, [
-			E('span', {}, [ E('i', { class: 'nq-key nq-fill-green' }), _('上传流量') + ' ' + NQ.bytes(t.upload) ]),
-			E('span', {}, [ E('i', { class: 'nq-key nq-fill-blue' }), _('下载流量') + ' ' + NQ.bytes(t.download) ])
+			E('span', {}, [ E('i', { class: 'nq-key nq-fill-green' }), _('实际上传') + ' ' + NQ.bytes(t.upload) ]),
+			E('span', {}, [ E('i', { class: 'nq-key nq-fill-blue' }), _('实际下载') + ' ' + NQ.bytes(t.download) ])
 		]),
 		t.unknown > 0 ? NQ.notice(_('%d 个账号未返回上下行计数，合计仅包含已上报的数据。')
 			.format(t.unknown), 'warn') : ''
@@ -111,7 +112,7 @@ function sharedBar(model) {
 
 function rulesPanel(model) {
 	return NQ.panel(_('流量统计说明'), _('统计口径与配额规则'), E('ul', { class: 'nq-rules' }, [
-		rule(_('统计口径'), _('受控网络内已认证终端的上传 + 下载')),
+		rule(_('统计口径'), _('实际流量为上传 + 下载；计费用量按全局倍率扣减，修改仅影响后续流量')),
 		rule(_('额度周期'), _('按账号重置日 00:00（配置时区）开始新周期')),
 		rule(_('达到配额'), _('自动限制联网，认证页仍可访问')),
 		rule(_('结算日恢复'), _('进入下个周期自动恢复额度，历史记录保留'))
@@ -127,18 +128,18 @@ function rule(label, text) {
 
 function barsPanel(model) {
 	var rows = model.items.slice().sort(function(x, y) {
-		return (Number(y.total_bytes) || 0) - (Number(x.total_bytes) || 0);
+		return (NQ.billedBytes(y) || 0) - (NQ.billedBytes(x) || 0);
 	});
 
 	if (rows.length === 0)
 		return NQ.panel(_('账号流量消耗明细'), _('当前周期'), NQ.notice(_('暂无账号。')));
 
 	var max = 0;
-	rows.forEach(function(a) { max = Math.max(max, Number(a.total_bytes) || 0); });
+	rows.forEach(function(a) { max = Math.max(max, NQ.billedBytes(a) || 0); });
 
 	return NQ.panel(_('账号流量消耗明细'), _('进度条以用量最高的账号为基准'), E('ul', { class: 'nq-bars' },
 		rows.map(function(a) {
-			var width = max > 0 ? ((Number(a.total_bytes) || 0) / max) * 100 : 0;
+			var width = max > 0 ? ((NQ.billedBytes(a) || 0) / max) * 100 : 0;
 			var p = NQ.pct(a.usage_percent);
 
 			return E('li', { class: 'nq-bar-row' }, [
@@ -146,19 +147,19 @@ function barsPanel(model) {
 				E('span', {
 					class: 'nq-bar-track',
 					role: 'progressbar',
-					'aria-label': _('%s 已用 %s，共 %s').format(a.username, NQ.bytes(a.total_bytes), NQ.bytes(a.quota_bytes)),
+					'aria-label': _('%s 已用 %s，共 %s').format(a.username, NQ.bytes(NQ.billedBytes(a)), NQ.bytes(a.quota_bytes)),
 					'aria-valuemin': '0',
 					'aria-valuemax': '100',
 					'aria-valuenow': String(Math.round(p))
 				}, [ E('i', { class: 'nq-bar-fill nq-fill-' + NQ.usageClass(p), style: 'width:' + width.toFixed(1) + '%' }) ]),
-				E('span', { class: 'nq-bar-value' }, [ NQ.bytes(a.total_bytes) ])
+				E('span', { class: 'nq-bar-value' }, [ NQ.bytes(NQ.billedBytes(a)) ])
 			]);
 		})));
 }
 
 function trafficTable(model, fmt) {
 	var rows = model.items.slice().sort(function(x, y) {
-		return (Number(y.total_bytes) || 0) - (Number(x.total_bytes) || 0);
+		return (NQ.billedBytes(y) || 0) - (NQ.billedBytes(x) || 0);
 	});
 
 	var body = rows.length ? rows.map(function(a) {
@@ -166,7 +167,8 @@ function trafficTable(model, fmt) {
 			E('td', {}, [ NQ.userNameCell(a) ]),
 			E('td', { class: 'nq-num' }, [ NQ.bytes(a.upload_bytes) ]),
 			E('td', { class: 'nq-num' }, [ NQ.bytes(a.download_bytes) ]),
-			E('td', { class: 'nq-num nq-strong' }, [ NQ.bytes(a.total_bytes) ]),
+			E('td', { class: 'nq-num' }, [ NQ.bytes(a.total_bytes) ]),
+			E('td', { class: 'nq-num nq-strong' }, [ NQ.bytes(NQ.billedBytes(a)) ]),
 			E('td', { class: 'nq-num' }, [ NQ.bytes(a.quota_bytes) ]),
 			E('td', {}, [ NQ.usageCell(a) ]),
 			E('td', { class: 'nq-period-cell' }, [
@@ -178,13 +180,14 @@ function trafficTable(model, fmt) {
 				])
 			])
 		]);
-	}) : [ NQ.emptyRow(7, _('暂无流量记录，账号首次使用后显示数据。')) ];
+	}) : [ NQ.emptyRow(8, _('暂无流量记录，账号首次使用后显示数据。')) ];
 
 	var headers = [
 		{ label: _('账号') },
-		{ label: _('上传流量'), cls: 'nq-num' },
-		{ label: _('下载流量'), cls: 'nq-num' },
-		{ label: _('累计使用'), cls: 'nq-num' },
+		{ label: _('实际上传'), cls: 'nq-num' },
+		{ label: _('实际下载'), cls: 'nq-num' },
+		{ label: _('实际合计'), cls: 'nq-num' },
+		{ label: _('计费用量'), cls: 'nq-num' },
 		{ label: _('周期额度'), cls: 'nq-num' },
 		{ label: _('使用比例') },
 		{ label: _('当前周期 / 下次重置') }

@@ -117,7 +117,7 @@ function sortList(items, mode) {
 	var list = items.slice();
 
 	if (mode === 'used')
-		list.sort(byNum('total_bytes'));
+		list.sort(function(a, b) { return NQ.billedBytes(b) - NQ.billedBytes(a); });
 	else if (mode === 'usage')
 		list.sort(byNum('usage_percent'));
 	else if (mode === 'created')
@@ -235,13 +235,15 @@ function detailBody(acc, fmt) {
 		]),
 		E('div', { class: 'nq-detail-progress' }, [
 			E('div', { class: 'nq-detail-progress-head' }, [
-				E('span', {}, [ _('当前周期累计') ]),
+				E('span', {}, [ _('本周期计费用量') ]),
 				E('strong', {}, [ NQ.pctLabel(p) + '%' ])
 			]),
 			NQ.usageTrack(p, _('额度使用率：%s').format(NQ.pctLabel(p) + '%'))
 		]),
 		E('dl', { class: 'nq-facts' }, [
-			fact(_('已用流量'), NQ.bytes(acc.total_bytes)),
+			fact(_('已用计费流量'), NQ.bytes(NQ.billedBytes(acc))),
+			fact(_('实际流量'), NQ.bytes(acc.total_bytes)),
+			fact(_('当前计费倍率'), ((Number(acc.traffic_multiplier_percent) || 100) / 100).toFixed(2) + ' 倍'),
 			fact(_('剩余流量'), NQ.bytes(acc.remaining_bytes)),
 			fact(_('周期额度'), NQ.bytes(acc.quota_bytes)),
 			fact(_('重置日'), resetSummary(acc)),
@@ -257,7 +259,7 @@ function detailBody(acc, fmt) {
 		hasPending(acc) ? NQ.notice(_('已安排重置日变更：自 %s 起改为 %s，当前用量保留。')
 			.format(fmt ? fmt.datetime(acc.pending_effective_at) : '—',
 				pendingSummary(acc)), 'warn') : '',
-		NQ.notice(_('统计周期为 [%s, %s)，按 %s 时区显示；用量为本周期上传与下载之和。')
+		NQ.notice(_('统计周期为 [%s, %s)，按 %s 时区显示；实际流量为本周期上传与下载之和；额度按计费用量扣减，倍率修改仅影响后续流量。')
 			.format(fmt ? fmt.datetime(acc.period_start_at) : '—', fmt ? fmt.datetime(acc.period_end_at) : '—',
 				(fmt && fmt.timezone) ? fmt.timezone : _('浏览器本地时区')))
 	];
@@ -709,7 +711,7 @@ function createAccountsView() {
 
 		var headers = [
 			{ label: _('账号') },
-			{ label: _('当前周期累计') },
+			{ label: _('本周期计费用量') },
 			{ label: _('周期额度'), cls: 'nq-num' },
 			{ label: _('重置日') },
 			{ label: _('结算日恢复'), cls: 'nq-num' },

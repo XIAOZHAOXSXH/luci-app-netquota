@@ -3,7 +3,7 @@
 -- domain consumer (admin rpcd, CLI, portal handler, tests).
 
 local util = {}
-util.VERSION = "0.5.1"
+util.VERSION = "0.6.0"
 
 util.MAX_SAFE = 9007199254740991   -- 2^53 - 1
 util.MAX_QUOTA = util.MAX_SAFE

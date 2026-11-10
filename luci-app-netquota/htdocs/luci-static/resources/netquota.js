@@ -81,6 +81,12 @@ var C_UPDATE_SETTINGS = rpc.declare({
 	expect: { }
 });
 
+// Separate client declaration: billing saves omit reset-day/timezone entirely.
+var C_UPDATE_BILLING = rpc.declare({
+	object: 'netquota', method: 'update_settings',
+	params: [ 'traffic_multiplier_percent' ], expect: { }
+});
+
 var C_PORTAL = rpc.declare({
 	object: 'netquota',
 	method: 'get_portal_info',
@@ -108,6 +114,7 @@ var METHODS = {
 	get_traffic: C_TRAFFIC,
 	get_settings: C_GET_SETTINGS,
 	update_settings: C_UPDATE_SETTINGS,
+	update_billing: C_UPDATE_BILLING,
 	get_portal_info: C_PORTAL
 };
 
@@ -193,6 +200,8 @@ function invoke(method, params) {
 		args = [ String(map.username), String(map.password), intParam(map.quota_bytes), resetParam(map.reset_day) ];
 	else if (method === 'update_settings')
 		args = [ intParam(map.default_reset_day), String(map.timezone) ];
+	else if (method === 'update_billing')
+		args = [ intParam(map.traffic_multiplier_percent) ];
 	else if (method === 'save_deployment')
 		args = [String(map.wifi_section || ''),String(map.egress || ''),String(map.portal_hostname || ''),String(map.portal_mode || 'http')];
 	else if (method === 'enable_guest')
@@ -580,12 +589,16 @@ function usageTrack(percent, label) {
 	]);
 }
 
+function billedBytes(a) {
+	return a && a.billed_bytes != null ? Number(a.billed_bytes) : Number(a && a.total_bytes) || 0;
+}
+
 function usageCell(a, label) {
 	var p = pct(a && a.usage_percent);
 
 	return E('div', { class: 'nq-usage-cell' }, [
 		E('div', { class: 'nq-usage-text' }, [
-			E('strong', {}, [ bytes(a && a.total_bytes) ]),
+			E('strong', {}, [ bytes(billedBytes(a)) ]),
 			E('span', {}, [ pctLabel(p) + '%' ])
 		]),
 		usageTrack(p, (label || _('额度使用率')) + ': ' + ws(a && a.username) + ' ' + pctLabel(p) + '%')
@@ -1268,6 +1281,7 @@ var NetQuota = baseclass.extend({
 	deleteAccount: function(id) { return invoke('delete_account', { id: id }); },
 	getTraffic: function() { return invoke('get_traffic'); },
 	getSettings: function() { return invoke('get_settings'); },
+	updateBilling: function(percent) { return invoke('update_billing', { traffic_multiplier_percent: percent }); },
 	updateSettings: function(day, tz) { return invoke('update_settings', { default_reset_day: day, timezone: tz }); },
 	getPortalInfo: function() { return invoke('get_portal_info'); },
 	getDeployment: function() { return invoke('get_deployment'); },
@@ -1280,6 +1294,7 @@ var NetQuota = baseclass.extend({
 
 	/* formatting */
 	bytes: bytes,
+	billedBytes: billedBytes,
 	bytesParts: bytesParts,
 	gbToBytes: gbToBytes,
 	bytesToGbInput: bytesToGbInput,

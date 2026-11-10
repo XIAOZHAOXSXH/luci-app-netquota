@@ -9,13 +9,13 @@ local function clear_cookie(cfg) return cookie_name(cfg)..'=; Path=/; Max-Age=0'
 local CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "..
   "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 local fields = {'id','username','quota_bytes','upload_bytes','download_bytes','total_bytes',
-  'remaining_bytes','usage_percent','exhausted','effective_reset_day','period_start_at',
+  'billed_bytes','traffic_multiplier_percent','remaining_bytes','usage_percent','exhausted','effective_reset_day','period_start_at',
   'period_end_at','next_reset_at','session_count'}
 local function public_account(raw)
   raw = raw and (raw.account or raw) or {}
   local out = {}
   for _, key in ipairs(fields) do out[key] = raw[key] end
-  out.used_bytes = raw.total_bytes or 0
+  out.used_bytes = raw.billed_bytes or raw.total_bytes or 0
   return out
 end
 local function origin(cfg) return require('netquota.config').portal_origin(cfg) end

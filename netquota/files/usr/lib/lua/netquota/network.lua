@@ -73,14 +73,14 @@ function M.rules(cfg, input_accounts, flat_sessions)
   local norm, by_id, seen_period, seen_ip = {}, {}, {}, {}
   for _, a in ipairs(accounts) do
     assert(C.is_identifier(a.id) and C.is_identifier(a.period_id), 'invalid account/period ID')
-    assert(C.is_quota(a.quota_bytes), 'invalid quota')
+    assert(C.is_quota(a.real_quota_bytes or a.quota_bytes), 'invalid quota')
     local up, down = tonumber(a.upload_bytes or 0), tonumber(a.download_bytes or 0)
     local used = tonumber(a.quota_used_bytes or (up + down))
     assert(C.is_counter(up) and C.is_counter(down) and C.is_counter(used), 'invalid counters')
     assert(up + down <= MAX, 'counter sum too large')
     local pid = tostring(a.period_id)
     assert(not seen_period[pid], 'duplicate period ID'); seen_period[pid] = true
-    local copy = {id=tostring(a.id), pid=pid, quota=tonumber(a.quota_bytes), up=up,
+    local copy = {id=tostring(a.id), pid=pid, quota=tonumber(a.real_quota_bytes or a.quota_bytes), up=up,
       down=down, used=math.max(used, up + down), sessions={}, exhausted=a.exhausted}
     norm[#norm+1] = copy; by_id[copy.id] = copy
     local function add(s)
@@ -258,7 +258,7 @@ function M.new(cfg, deps)
     for _,a in ipairs(accounts) do
       local used=math.max(tonumber(a.quota_used_bytes or 0),
         tonumber(a.upload_bytes or 0)+tonumber(a.download_bytes or 0))
-      if not a.exhausted and used<tonumber(a.quota_bytes) then
+      if not a.exhausted and used<tonumber(a.real_quota_bytes or a.quota_bytes) then
         for _,s in ipairs(a.sessions or {}) do
           local ip=s.ipv4_address; local mac=C.normalize_mac(s.mac_address)
           assert(C.is_ipv4(ip) and C.cidr_contains(cfg.guest_cidr,ip) and C.is_mac(mac),'invalid captive identity')
