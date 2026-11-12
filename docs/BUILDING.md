@@ -8,8 +8,8 @@ APK 构建格式参考 [OpenWrt package-pack.mk](https://github.com/openwrt/open
 
 | 输出 | 版本示例 | 架构字段 |
 | --- | --- | --- |
-| IPK | `netquota_0.6.0_all.ipk` | `all` |
-| APKv3 | `netquota-0.6.0-r1.apk` | `noarch` |
+| IPK | `netquota_0.6.1_all.ipk` | `all` |
+| APKv3 | `netquota-0.6.1-r1.apk` | `noarch` |
 
 构建 APK 不等于完成新版 OpenWrt / fw4 的运行适配。当前设备验收仍限于 README 中列出的固件。
 
@@ -18,7 +18,7 @@ APK 构建格式参考 [OpenWrt package-pack.mk](https://github.com/openwrt/open
 工作流：`.github/workflows/build-release.yml`。
 
 1. 校验后端、两个 Makefile 和构建器版本一致；版本 tag 必须为 `v<源码版本>`。
-2. 运行 Python 测试及 JS 语法检查。
+2. 运行 Python 测试、JS 语法检查和流量展示回归检查。
 3. 并行构建两种格式。APK 在 runner 中以 root 身份打包，确保文件属主为 root:root；由官方工具校验完整性、解包后逐个比对 IPK 的业务文件及权限。不会执行包中的路由器维护脚本。
 4. 两种格式均成功后下载四个产物，检查数量与版本，生成 SHA256SUMS 与 BUILDINFO.json。
 5. PR 只保存构建产物；main、手动运行发布预览版；版本 tag 发布正式版。只有发布 job 获取 `contents: write` 权限。
@@ -30,8 +30,8 @@ APK 构建格式参考 [OpenWrt package-pack.mk](https://github.com/openwrt/open
 将两个包 Makefile、`tools/build_ipk.py` 的版本、`netquota/files/usr/lib/lua/netquota/util.lua` 运行版本及门户资源版本统一更新，完成测试并提交到 main。然后推送对应标签，例如：
 
 ```sh
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
 不要将不同源码重用同一个正式版本标签。修订源码应增加版本号再发布。构建产物保存在 Release / Actions，不进入 Git 源码。
@@ -77,3 +77,5 @@ python tools/test_on_router.py --fingerprint <设备SSH指纹> --billing-network
 `tests/browser-billing.js` 验证倍率保存、取消、参数范围、历史记录、亮暗主题和手机布局；会短暂修改全局倍率，并在结束时恢复原值。请仅在专用测试设备执行。
 
 原始设备转储、本机测试状态与生成包保留在被 Git 忽略的目录中；公开的兼容性结论见 `docs/compatibility/` 与测试修订记录。
+
+`node tests/test_usage_display.js` 使用实际/计费不同的回归数据检查生产 LuCI 渲染器；`tests/browser-usage-display.js` 在已安装插件上只读核对三页总量、筛选和亮暗主题。`tests/browser-portal.js` 验证真实访客登录及管理计费字段不对访客公开。

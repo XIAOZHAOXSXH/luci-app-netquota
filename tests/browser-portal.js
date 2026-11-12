@@ -30,6 +30,13 @@ async (page) => {
     await guest.locator('#done-account').click();
     await guest.locator('#view-account').waitFor({state:'visible'});
     await guest.waitForFunction(value=>document.querySelector('#acct-username').textContent===value,account.username);
+    const publicAccount=await guest.evaluate(async()=> (await (await fetch('/cgi-bin/api/account')).json()).data.account);
+    for(const key of ['upload_bytes','download_bytes','total_bytes','billed_bytes','traffic_multiplier_percent'])
+      if(key in publicAccount) throw new Error('Guest API exposes admin billing detail: '+key);
+    const accountText=await guest.locator('#view-account').innerText();
+    if(/虚标|倍率|计费|实际上传|实际下载|实际流量/.test(accountText))
+      throw new Error('Guest account view exposes admin billing policy');
+    await guest.getByText('已用流量',{exact:true}).waitFor();
     await guest.locator('#logout-btn').click();
     await guest.locator('#view-login').waitFor({state:'visible'});
     // Real page, but a deliberately failed API exchange. It must not claim
@@ -41,7 +48,7 @@ async (page) => {
     if(!message.includes(secure ? '完整浏览器' : '访客 Wi-Fi') || !await guest.locator('#login-submit').isDisabled())
       throw new Error('Connection/trust guidance missing');
     if(errors.length) throw new Error(errors.join('; '));
-    return {protocol:secure ? 'https':'http',realGuestBrowserLogin:true,cookieIsolation:true,accountView:true,logout:true,transportFailureGuidance:true,pageErrors:errors};
+    return {protocol:secure ? 'https':'http',realGuestBrowserLogin:true,cookieIsolation:true,accountView:true,adminBillingDetailsHidden:true,logout:true,transportFailureGuidance:true,pageErrors:errors};
   }
   finally {
     await context.close();

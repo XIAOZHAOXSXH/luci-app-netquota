@@ -47,7 +47,7 @@ import tarfile
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
-VERSION_DEFAULT = "0.6.0"
+VERSION_DEFAULT = "0.6.1"
 EPOCH_DEFAULT = 0
 ARCH_DEFAULT = "all"
 

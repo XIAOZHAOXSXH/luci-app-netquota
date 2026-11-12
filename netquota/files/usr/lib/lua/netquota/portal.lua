@@ -8,8 +8,9 @@ local function cookie_flags(cfg) return (cfg.portal_mode=='https' and '; Secure'
 local function clear_cookie(cfg) return cookie_name(cfg)..'=; Path=/; Max-Age=0'..cookie_flags(cfg) end
 local CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "..
   "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
-local fields = {'id','username','quota_bytes','upload_bytes','download_bytes','total_bytes',
-  'billed_bytes','traffic_multiplier_percent','remaining_bytes','usage_percent','exhausted','effective_reset_day','period_start_at',
+-- Guests receive quota usage only. Raw counters and billing policy are admin-only.
+local fields = {'id','username','quota_bytes',
+  'remaining_bytes','usage_percent','exhausted','effective_reset_day','period_start_at',
   'period_end_at','next_reset_at','session_count'}
 local function public_account(raw)
   raw = raw and (raw.account or raw) or {}

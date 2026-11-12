@@ -198,18 +198,12 @@
     setText('acct-username', acct.username || '—');
     var used = Number(acct.used_bytes || 0);
     var quota = Number(acct.quota_bytes || 0);
-    var up = Number(acct.upload_bytes || 0);
-    var down = Number(acct.download_bytes || 0);
     var remaining = Math.max(0, quota - used);
     var p = pct(used, quota);
 
     setText('acct-used', fmtBytes(used));
     setText('acct-quota', fmtBytes(quota));
     setText('acct-remaining', fmtBytes(remaining));
-    setText('acct-up', fmtBytes(up));
-    setText('acct-raw', fmtBytes(Number(acct.total_bytes || 0)));
-    setText('acct-rate', ((Number(acct.traffic_multiplier_percent) || 100) / 100).toFixed(2) + ' 倍');
-    setText('acct-down', fmtBytes(down));
     setText('acct-percent', p + '%');
     setText('acct-period-start', fmtTime(acct.period_start_at));
     setText('acct-period-end', fmtTime(acct.next_reset_at || acct.period_end_at));

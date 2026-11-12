@@ -593,6 +593,16 @@ function billedBytes(a) {
 	return a && a.billed_bytes != null ? Number(a.billed_bytes) : Number(a && a.total_bytes) || 0;
 }
 
+function trafficTotalCards(items) {
+	var billed = (items || []).reduce(function(total, a) { return total + billedBytes(a); }, 0);
+	return E('div', { class: 'nq-cards nq-traffic-totals' }, [
+		statCard({ label: _('本周期实际总量'), icon: 'total', tone: 'blue',
+			parts: bytesParts(sum(items, 'total_bytes'), 2), foot: _('全部账号当前周期的实际上传 + 下载') }),
+		statCard({ label: _('本周期计费总量'), icon: 'usage', tone: 'amber',
+			parts: bytesParts(billed, 2), foot: _('全部账号已累计扣减的用量，包含倍率计费') })
+	]);
+}
+
 function usageCell(a, label) {
 	var p = pct(a && a.usage_percent);
 
@@ -601,7 +611,8 @@ function usageCell(a, label) {
 			E('strong', {}, [ bytes(billedBytes(a)) ]),
 			E('span', {}, [ pctLabel(p) + '%' ])
 		]),
-		usageTrack(p, (label || _('额度使用率')) + ': ' + ws(a && a.username) + ' ' + pctLabel(p) + '%')
+		usageTrack(p, (label || _('额度使用率')) + ': ' + ws(a && a.username) + ' ' + pctLabel(p) + '%'),
+		E('small', { class: 'nq-usage-actual' }, [ _('实际 %s').format(bytes(a && a.total_bytes)) ])
 	]);
 }
 
@@ -1295,6 +1306,7 @@ var NetQuota = baseclass.extend({
 	/* formatting */
 	bytes: bytes,
 	billedBytes: billedBytes,
+	trafficTotalCards: trafficTotalCards,
 	bytesParts: bytesParts,
 	gbToBytes: gbToBytes,
 	bytesToGbInput: bytesToGbInput,

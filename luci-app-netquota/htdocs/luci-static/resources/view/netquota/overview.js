@@ -1,7 +1,7 @@
 'require view';
 'require netquota as NQ';
 
-/* Overview: four counts, top-five usage bars, accounts at or above 80 %, recent accounts. */
+/* Overview: account counts, actual/billed totals, top-five usage and attention. */
 
 var ATTENTION_PERCENT = 80;
 var RECENT_LIMIT = 8;
@@ -47,7 +47,7 @@ function countCards(model) {
 	var t = model.totals;
 	var n = Math.max(1, t.account_count);
 
-	return E('div', { class: 'nq-cards' }, [
+	return E('div', { class: 'nq-cards nq-account-counts' }, [
 		NQ.statCard({
 			label: _('账号总数'),
 			icon: 'accounts',
@@ -64,15 +64,6 @@ function countCards(model) {
 			ratio: t.online_count / n,
 			gauge: 'green',
 			foot: _('按账号去重的在线终端')
-		}),
-		NQ.statCard({
-			label: _('本周期计费用量'),
-			icon: 'usage',
-			tone: 'amber',
-			parts: NQ.bytesParts(t.total_bytes, 2),
-			ratio: t.quota_bytes > 0 ? t.total_bytes / t.quota_bytes : 0,
-			gauge: 'amber',
-			foot: _('所有账号按计费倍率累计扣减')
 		}),
 		NQ.statCard({
 			label: _('流量用尽'),
@@ -220,6 +211,7 @@ function render(model, ctx) {
 
 	return [
 		countCards(model),
+		NQ.trafficTotalCards(model.items),
 		E('div', { class: 'nq-split' }, [ topUsage(model, ctx.fmt), attentionPanel(model) ]),
 		recentTable(model, ctx.fmt, ctx),
 		NQ.updatedStamp(model.updated_at, ctx.fmt, 20)

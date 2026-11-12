@@ -48,18 +48,8 @@ function summaryCards(model) {
 	var t = model.totals;
 	var upShare = share(t.upload, t.raw);
 	var downShare = share(t.download, t.raw);
-	var quotaUse = share(t.total, t.quota);
 
-	return E('div', { class: 'nq-cards' }, [
-		NQ.statCard({
-			label: _('本周期计费用量'),
-			icon: 'total',
-			tone: 'blue',
-			parts: NQ.bytesParts(t.total),
-			ratio: quotaUse / 100,
-			gauge: quotaUse >= 100 ? 'red' : (quotaUse >= 80 ? 'amber' : 'blue'),
-			foot: _('实际上传 + 下载：%s').format(NQ.bytes(t.raw))
-		}),
+	return E('div', { class: 'nq-cards nq-traffic-totals' }, [
 		NQ.statCard({
 			label: _('实际上传'),
 			icon: 'upload',
@@ -77,15 +67,6 @@ function summaryCards(model) {
 			ratio: downShare / 100,
 			gauge: 'amber',
 			foot: _('占实际流量 %s%%').format(NQ.pctLabel(downShare))
-		}),
-		NQ.statCard({
-			label: _('账号配额总量'),
-			icon: 'quota',
-			tone: 'red',
-			parts: NQ.bytesParts(t.quota),
-			ratio: quotaUse / 100,
-			gauge: quotaUse >= 80 ? 'red' : 'blue',
-			foot: _('已消耗总配额 %s%%').format(NQ.pctLabel(quotaUse))
 		})
 	]);
 }
@@ -199,6 +180,7 @@ function trafficTable(model, fmt) {
 
 function render(model, ctx) {
 	var out = [
+		NQ.trafficTotalCards(model.items),
 		summaryCards(model),
 		E('div', { class: 'nq-split' }, [ sharedBar(model), rulesPanel(model) ]),
 		barsPanel(model),

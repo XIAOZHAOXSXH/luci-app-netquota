@@ -295,6 +295,20 @@
 	margin-bottom: 18px;
 }
 
+.netquota .nq-account-counts {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.netquota .nq-cards.nq-traffic-totals {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.netquota .nq-usage-actual {
+	display: block;
+	margin-top: 5px;
+	color: var(--nq-muted);
+}
+
 .netquota .nq-card {
 	background: var(--nq-surface);
 	border: 1px solid var(--nq-line);
@@ -1845,7 +1859,8 @@
 }
 
 @media (max-width: 420px) {
-	.netquota .nq-cards {
+	.netquota .nq-cards,
+	.netquota .nq-cards.nq-traffic-totals {
 		grid-template-columns: minmax(0, 1fr);
 	}
 }

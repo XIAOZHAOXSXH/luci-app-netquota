@@ -752,7 +752,7 @@ function createAccountsView() {
 			state.slots.toast.replaceChildren(state.toast);
 		}
 
-		state.slots.cards.replaceChildren(statsCards({ stats: accountStats(state.items) }));
+		state.slots.cards.replaceChildren(statsCards({ stats: accountStats(state.items) }), NQ.trafficTotalCards(state.items));
 		state.slots.table.replaceChildren();
 
 		paintTable();

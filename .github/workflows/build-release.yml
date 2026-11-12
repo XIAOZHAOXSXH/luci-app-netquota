@@ -41,6 +41,8 @@ jobs:
         run: |
           find luci-app-netquota/htdocs netquota/files/usr/share/netquota/portal tests -name '*.js' -print0 |
             xargs -0 -n1 node --check
+      - name: Usage display regression
+        run: node tests/test_usage_display.js
       - name: Check whitespace
         run: git diff --check HEAD
 
